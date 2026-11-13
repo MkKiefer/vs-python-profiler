@@ -1,6 +1,8 @@
 import * as esbuild from 'esbuild';
 import { readdirSync } from 'node:fs';
 
+// Builds the extension host (and its node tests). The webview is built by Vite: see vite.config.ts.
+
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 const tests = process.argv.includes('--tests');
@@ -23,17 +25,13 @@ const builds = tests
         platform: 'node', format: 'cjs', target: 'node20',
         external: ['vscode'],
       },
-      {
-        ...common,
-        entryPoints: ['src/webview/main.ts'],
-        outfile: 'dist/webview.js',
-        platform: 'browser', format: 'iife', target: 'es2022',
-        loader: { '.css': 'text' },
-      },
     ];
 
 if (watch) {
   for (const b of builds) (await esbuild.context(b)).watch();
+  // the webview is built by Vite (vite.config.ts); watch it in the same process
+  const { build } = await import('vite');
+  await build({ mode: 'development', build: { watch: {} } });
 } else {
   await Promise.all(builds.map((b) => esbuild.build(b)));
 }

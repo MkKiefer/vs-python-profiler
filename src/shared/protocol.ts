@@ -35,25 +35,37 @@ export type ToWebview =
   | { type: 'delta'; data: Delta }
   | { type: 'state'; state: SessionState; capabilities: Capabilities }
   | { type: 'reveal'; fn: number }
-  | { type: 'error'; message: string };
+  /** Answer to one `command` request; `error` is set when it failed. */
+  | { type: 'commandResult'; id: number; error?: string };
 
 /** Messages webview → extension */
 export type FromWebview =
   | { type: 'ready' }
   | { type: 'openSource'; file: string; line: number }
   | { type: 'viewState'; state: ViewState }
-  | { type: 'command'; command: WebviewCommand; args?: Record<string, unknown> };
+  | CommandRequest;
 
-export type WebviewCommand =
-  | 'stop'
-  | 'snapshot'
-  | 'tracemalloc'
-  | 'asyncioDebug'
-  | 'objectCounts'
-  | 'mark'
-  | 'save'
-  | 'exportSpeedscope'
-  | 'exportCollapsed';
+/** Arguments of every dashboard command. */
+export interface WebviewCommandArgs {
+  stop: { terminate?: boolean };
+  snapshot: { label?: string };
+  /** omitted `enabled` toggles */
+  tracemalloc: { enabled?: boolean };
+  asyncioDebug: { enabled?: boolean };
+  objectCounts: Record<string, never>;
+  /** omitted `name` asks the user */
+  mark: { name?: string };
+  save: Record<string, never>;
+  exportSpeedscope: Record<string, never>;
+  exportCollapsed: Record<string, never>;
+}
+
+export type WebviewCommand = keyof WebviewCommandArgs;
+
+/** A command the dashboard asks the extension to run; answered by `commandResult` with the same `id`. */
+export type CommandRequest = {
+  [C in WebviewCommand]: { type: 'command'; id: number; command: C; args: WebviewCommandArgs[C] };
+}[WebviewCommand];
 
 // ──────────────────────────────────────────────────── extension ⇄ collector
 

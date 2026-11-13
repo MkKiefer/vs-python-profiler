@@ -7,7 +7,7 @@ import type { Session } from './session';
 import type { SessionManager } from './sessionManager';
 import { settings } from './settings';
 import { toCollapsed, toSpeedscope } from '../shared/exporters';
-import type { WebviewCommand } from '../shared/protocol';
+import type { CommandRequest } from '../shared/protocol';
 
 export type ExportFormat = 'speedscope' | 'collapsed';
 
@@ -21,20 +21,20 @@ export class SessionActions {
   constructor(private readonly sessions: SessionManager) {}
 
   /** Run a command sent by the dashboard. */
-  async run(command: WebviewCommand, session: Session, args: Record<string, unknown> = {}): Promise<void> {
-    switch (command) {
+  async run(request: CommandRequest, session: Session): Promise<void> {
+    switch (request.command) {
       case 'stop':
-        return this.sessions.stop(session, args.terminate === true);
+        return this.sessions.stop(session, request.args.terminate === true);
       case 'snapshot':
-        return this.snapshot(session, typeof args.label === 'string' ? args.label : undefined);
+        return this.snapshot(session, request.args.label);
       case 'tracemalloc':
-        return this.setTracemalloc(session, typeof args.enabled === 'boolean' ? args.enabled : undefined);
+        return this.setTracemalloc(session, request.args.enabled);
       case 'asyncioDebug':
-        return this.setAsyncioDebug(session, typeof args.enabled === 'boolean' ? args.enabled : undefined);
+        return this.setAsyncioDebug(session, request.args.enabled);
       case 'objectCounts':
         return this.countObjects(session);
       case 'mark':
-        return this.mark(session, typeof args.name === 'string' ? args.name : undefined);
+        return this.mark(session, request.args.name);
       case 'save':
         return this.saveAs(session);
       case 'exportSpeedscope':

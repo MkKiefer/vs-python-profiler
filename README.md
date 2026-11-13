@@ -47,7 +47,7 @@ sampling, task graphs and GC stats still work.
 ## Architecture
 
 ```
-VS Code extension host (TypeScript, src/extension)        Webview dashboard (TS, canvas, src/webview)
+VS Code extension host (TypeScript, src/extension)        Webview dashboard (Vue 3, src/webview)
  ├ extension.ts        composition root                                   ▲ postMessage
  ├ EnvironmentResolver ← ms-python API (interpreter per resource, .env)   │ (init + deltas)
  ├ LaunchAdapter       ← debugpy configs, python-profiler debug type      │
@@ -82,6 +82,15 @@ Collector  (python -I, *target's* interpreter, stdlib only)  python/_vscode_pypr
 - **Private API, isolated.** `_remote_debugging` is CPython-internal, so only
   `tachyon.py` touches it, with fallbacks for changed signatures. Its types are
   declared in `python/stubs/`.
+- **The dashboard is a Vue app.** `src/webview` is Vue 3 (`<script setup>`), Pinia,
+  Vue Router and Tailwind, built by Vite into `dist/webview.js` + `dist/webview.css`:
+  `services/` (the `HostClient` interface, its VS Code implementation and an in-memory
+  mock), `stores/` (session, view filters, notifications, tooltip), `router/` (one route
+  per tab, `/cpu/focus/:fn` for callers & callees), `views/`, `components/ui` (the
+  design system), `components/charts` (canvas charts), `domain/insights.ts`. The
+  `ProfileModel` stays raw in a shallow ref: live deltas mutate it in place and trigger
+  one redraw at most every 500 ms. Commands are request/response (`commandResult`), so
+  every button awaits its outcome and a failure is shown as a toast.
 - **Start mode always uses a real terminal.** VS Code runs the launcher with your
   interpreter, so you get a TTY, stdin and colors. The agent's hello tells the collector
   which PID to sample, which also handles Windows venv launcher stubs.
@@ -90,7 +99,8 @@ Collector  (python -I, *target's* interpreter, stdlib only)  python/_vscode_pypr
 
 ```bash
 npm install
-npm run check              # typecheck + eslint + tests + build (the TypeScript gate)
+npm run check              # vue-tsc + eslint + tests + build (the TypeScript gate)
+npm run test:webview       # just the dashboard specs (Vitest + jsdom)
 
 cd python
 pdm install -G dev         # Python 3.15 venv with ruff, mypy, vulture
@@ -101,6 +111,7 @@ pdm run test:integration   # collector end-to-end: launch, attach+inject, memory
 | Tests | What they cover |
 |---|---|
 | `test/*.test.ts` | profile model and exporters against recorded profiles (`test/fixtures`), launch-config parsing, formatting, and an activation smoke test that loads the extension against a stub of the VS Code API |
+| `test/webview/*.spec.ts` | the dashboard: every spec mounts the whole app (real router and stores) over `MockHostClient` through `mountApp(path, …)`; `smoke.spec.ts` opens every route with every fixture, saved and live, and any Vue warning or console error fails a test; feature specs drive tabs, commands, filters and live updates; unit specs cover the host client, persisted state and insights |
 | `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `PYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`PYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
 | `python/tests/unit/` | one test module per source module of the collector; no target process needed |
 | `python/tests/integration/` | drives a real collector over stdio exactly like the extension, profiling the programs in `test-apps/` |
@@ -118,9 +129,13 @@ is the only module that reads them.
 The Python code follows the team's Python and unittest style guides: behaviour lives
 in classes with constructor-injected collaborators, interfaces are ABCs, imports are
 absolute and at the top of the file, there is no `Any`, and the gate is `pdm run check`.
-The TypeScript code follows the TypeScript rules of the Vue & TypeScript guide (no
-`any`, no non-null assertions, one module for the wire contract, no fire-and-forget
-promises), enforced by ESLint.
+The TypeScript and Vue code follows the Vue & TypeScript guide: no `any`, no non-null
+assertions, one module for the wire contract, routes named through one enum, one
+store per domain, an API-client interface with a real and an in-memory implementation,
+awaited writes with visible failures, Tailwind for layout and CSS custom properties for
+every theme colour, whole-app specs through `mountApp`, `data-testid`s stripped from
+production builds, and `vue-tsc --build` + ESLint (`eslint-plugin-vue`, typed rules) +
+tests + build as the gate.
 
 This project has a few **documented exceptions**, all caused by code that runs outside
 the collector's own Python 3.15 process:
@@ -133,3 +148,15 @@ the collector's own Python 3.15 process:
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |
 | Module-level entry points | `cli.main`, `launcher.cli_main`, `agent.start` | Called by name from the shell shims and from `sys.remote_exec`; they only delegate to a class. |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
+
+The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of
+the Vue & TypeScript guide are adapted:
+
+| Guide rule | Here | Why |
+|---|---|---|
+| Navigation state lives in the URL | The router uses memory history; the current route is saved through the webview state (`HostClient.saveState`) and restored when the panel reopens | A webview has no address bar and no shareable URL; the webview state is what survives hiding, moving and reloading the panel. |
+| Filters in the URL (`?tab=`) | Sample mode, grouping, threads, hidden libraries and time range live in the `view` store; only the CPU view kind is a route query | The filters are shared by every tab and reported to the extension (editor heat map, Hotspots view), so they are session view state rather than navigation. |
+| `ensureX` / `refreshX` / `fetchX` loads, shared polling helper | Not used | The extension pushes data (`init`, then `delta`s); the dashboard never requests or polls. |
+| Explicit save, optimistic concurrency | Not applicable | There are no editors. Each command is one explicit click, awaited, with a failure shown as a toast. |
+| Permission gating in router guard, navigation and component | Session capabilities (`live`, `agent`, `tracemalloc`, …) gate actions inside the components only | There are no users or permissions; every tab is useful for every session, so no route needs a guard. |
+| Vitest for tests | Extension-host tests (`test/*.test.ts`) stay on `node:test` | They test Node code against a stub of the VS Code API; Vitest covers the Vue app. |

@@ -1,29 +1,8 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "Bundler",
-    "lib": [
-      "ES2022",
-      "DOM",
-      "DOM.Iterable"
-    ],
-    "strict": true,
-    "noUnusedLocals": true,
-    "noFallthroughCasesInSwitch": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "isolatedModules": true,
-    "types": [
-      "node",
-      "vscode"
-    ],
-    "noUnusedParameters": true,
-    "noImplicitOverride": true,
-    "noImplicitReturns": true
-  },
-  "include": [
-    "src/**/*.ts",
-    "test/**/*.ts"
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.extension.json" },
+    { "path": "./tsconfig.webview.json" },
+    { "path": "./tsconfig.vitest.json" }
   ]
 }

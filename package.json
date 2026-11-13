@@ -46,7 +46,7 @@
       },
       {
         "command": "pyprof.profileConfiguration",
-        "title": "Profile Launch Configuration…",
+        "title": "Profile Launch Configuration\u2026",
         "category": "Python Profiler",
         "icon": "$(debug-alt)"
       },
@@ -57,7 +57,7 @@
       },
       {
         "command": "pyprof.attach",
-        "title": "Attach Profiler to Process…",
+        "title": "Attach Profiler to Process\u2026",
         "category": "Python Profiler",
         "icon": "$(plug)"
       },
@@ -103,7 +103,7 @@
       },
       {
         "command": "pyprof.mark",
-        "title": "Add Timeline Marker…",
+        "title": "Add Timeline Marker\u2026",
         "category": "Python Profiler",
         "icon": "$(bookmark)"
       },
@@ -115,19 +115,19 @@
       },
       {
         "command": "pyprof.openProfile",
-        "title": "Open Profile File…",
+        "title": "Open Profile File\u2026",
         "category": "Python Profiler",
         "icon": "$(folder-opened)"
       },
       {
         "command": "pyprof.saveProfile",
-        "title": "Save Profile As…",
+        "title": "Save Profile As\u2026",
         "category": "Python Profiler",
         "icon": "$(save)"
       },
       {
         "command": "pyprof.export",
-        "title": "Export Profile (speedscope / collapsed stacks)…",
+        "title": "Export Profile (speedscope / collapsed stacks)\u2026",
         "category": "Python Profiler"
       },
       {
@@ -550,7 +550,7 @@
           "default": 1000,
           "minimum": 10,
           "maximum": 20000,
-          "description": "Stack samples per second. Tachyon handles 1–10 kHz with negligible overhead on the target."
+          "description": "Stack samples per second. Tachyon handles 1\u201310 kHz with negligible overhead on the target."
         },
         "pyprof.blockingSampling": {
           "type": "boolean",
@@ -560,7 +560,7 @@
         "pyprof.memory.tracemallocOnStart": {
           "type": "boolean",
           "default": false,
-          "description": "Start tracemalloc when a session starts (adds ~30–100% CPU and memory overhead to the target)."
+          "description": "Start tracemalloc when a session starts (adds ~30\u2013100% CPU and memory overhead to the target)."
         },
         "pyprof.memory.tracebackFrames": {
           "type": "number",
@@ -635,28 +635,44 @@
     }
   },
   "scripts": {
-    "build": "node esbuild.mjs",
+    "build": "node esbuild.mjs && vite build --mode development",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "vue-tsc --build",
     "lint": "eslint src test",
-    "test": "node esbuild.mjs --tests && node --test dist-test/*.test.cjs",
+    "test": "npm run test:extension && npm run test:webview",
     "check": "npm run typecheck && npm run lint && npm test && npm run build",
     "check:python": "cd python && pdm run check",
     "test:python": "cd python && pdm run test",
     "test:integration": "cd python && pdm run test:integration",
-    "package": "node esbuild.mjs --production && vsce package --no-dependencies",
-    "vscode:prepublish": "node esbuild.mjs --production"
+    "package": "node esbuild.mjs --production && vite build && vsce package --no-dependencies",
+    "vscode:prepublish": "node esbuild.mjs --production && vite build",
+    "test:extension": "node esbuild.mjs --tests && node --test dist-test/*.test.cjs",
+    "test:webview": "vitest run"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
     "@types/node": "^22.20.5",
     "@types/vscode": "^1.95.0",
+    "@vitejs/plugin-vue": "^6.0.11",
     "@vscode/vsce": "^3.6.0",
+    "@vue/compiler-core": "^3.5.45",
+    "@vue/test-utils": "^2.5.1",
     "esbuild": "^0.25.0",
     "eslint": "^10.14.0",
+    "eslint-plugin-vue": "^10.12.1",
+    "jsdom": "^26.1.0",
+    "tailwindcss": "^4.3.5",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.72.2"
+    "typescript-eslint": "^8.72.2",
+    "vite": "^7.3.8",
+    "vitest": "^3.2.7",
+    "vue-eslint-parser": "^10.4.2",
+    "vue-tsc": "^3.3.14"
   },
   "dependencies": {
-    "@vscode/python-extension": "^1.0.6"
+    "@vscode/python-extension": "^1.0.6",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.45",
+    "vue-router": "^4.6.4"
   }
 }

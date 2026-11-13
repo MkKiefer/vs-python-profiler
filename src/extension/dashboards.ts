@@ -113,9 +113,10 @@ export class Dashboards implements vscode.Disposable {
         break;
       case 'command':
         try {
-          await this.actions.run(message.command, session, message.args);
+          await this.actions.run(message, session);
+          post(panel, { type: 'commandResult', id: message.id });
         } catch (e) {
-          post(panel, { type: 'error', message: errorMessage(e) });
+          post(panel, { type: 'commandResult', id: message.id, error: errorMessage(e) });
         }
         break;
     }
@@ -128,6 +129,7 @@ export class Dashboards implements vscode.Disposable {
   private html(webview: vscode.Webview): string {
     const nonce = crypto.randomBytes(16).toString('base64');
     const script = webview.asWebviewUri(vscode.Uri.joinPath(this.distUri, 'webview.js')).toString();
+    const style = webview.asWebviewUri(vscode.Uri.joinPath(this.distUri, 'webview.css')).toString();
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} data:`,
@@ -142,9 +144,10 @@ export class Dashboards implements vscode.Disposable {
 <meta http-equiv="Content-Security-Policy" content="${csp};">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Python Profile</title>
+<link rel="stylesheet" href="${style}">
 </head>
 <body>
-<div id="app"><div class="loading">Loading profile…</div></div>
+<div id="app"><div style="padding:24px;opacity:.7">Loading profile…</div></div>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
 </html>`;
