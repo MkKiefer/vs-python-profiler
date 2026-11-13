@@ -1,0 +1,631 @@
+{
+  "name": "python-profiler",
+  "displayName": "Python Profiler (Tachyon)",
+  "description": "CPU, memory and asyncio profiling for Python 3.15+ inside VS Code: live flame graphs, editor heat maps, leak hunting and event-loop diagnostics. Launch or attach, on Windows, Linux and macOS.",
+  "version": "0.1.0",
+  "publisher": "pyprof",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "python",
+    "profiler",
+    "flamegraph",
+    "tachyon",
+    "asyncio",
+    "memory",
+    "performance"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "extensionDependencies": [
+    "ms-python.python"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "onDebugResolve:python-profiler",
+    "onDebugDynamicConfigurations:python-profiler",
+    "onCustomEditor:pyprof.profileViewer",
+    "workspaceContains:**/*.py"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "pyprof.profileFile",
+        "title": "Profile Python File",
+        "category": "Python Profiler",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "pyprof.profileConfiguration",
+        "title": "Profile Launch Configuration…",
+        "category": "Python Profiler",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "pyprof.profileTest",
+        "title": "Profile Test at Cursor",
+        "category": "Python Profiler"
+      },
+      {
+        "command": "pyprof.attach",
+        "title": "Attach Profiler to Process…",
+        "category": "Python Profiler",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "pyprof.attachProcess",
+        "title": "Attach Profiler",
+        "category": "Python Profiler",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "pyprof.stop",
+        "title": "Stop Profiling",
+        "category": "Python Profiler",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "pyprof.stopAndTerminate",
+        "title": "Stop Profiling and Terminate Program",
+        "category": "Python Profiler",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "pyprof.openDashboard",
+        "title": "Open Profile Dashboard",
+        "category": "Python Profiler",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "pyprof.snapshot",
+        "title": "Take Memory Snapshot",
+        "category": "Python Profiler",
+        "icon": "$(device-camera)"
+      },
+      {
+        "command": "pyprof.toggleTracemalloc",
+        "title": "Toggle Memory Tracing (tracemalloc)",
+        "category": "Python Profiler"
+      },
+      {
+        "command": "pyprof.toggleAsyncioDebug",
+        "title": "Toggle asyncio Debug Mode",
+        "category": "Python Profiler"
+      },
+      {
+        "command": "pyprof.mark",
+        "title": "Add Timeline Marker…",
+        "category": "Python Profiler",
+        "icon": "$(bookmark)"
+      },
+      {
+        "command": "pyprof.toggleHeat",
+        "title": "Toggle Editor Heat Map",
+        "category": "Python Profiler",
+        "icon": "$(flame)"
+      },
+      {
+        "command": "pyprof.openProfile",
+        "title": "Open Profile File…",
+        "category": "Python Profiler",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "pyprof.saveProfile",
+        "title": "Save Profile As…",
+        "category": "Python Profiler",
+        "icon": "$(save)"
+      },
+      {
+        "command": "pyprof.export",
+        "title": "Export Profile (speedscope / collapsed stacks)…",
+        "category": "Python Profiler"
+      },
+      {
+        "command": "pyprof.refreshProcesses",
+        "title": "Refresh",
+        "category": "Python Profiler",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "pyprof.selectSession",
+        "title": "Show Session",
+        "category": "Python Profiler"
+      },
+      {
+        "command": "pyprof.deleteSession",
+        "title": "Delete Saved Profile",
+        "category": "Python Profiler",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "pyprof.revealFunction",
+        "title": "Show in Dashboard",
+        "category": "Python Profiler"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "pyprof.profileFile",
+          "when": "resourceLangId == python",
+          "group": "navigation@50"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "pyprof.profileFile",
+          "when": "resourceLangId == python",
+          "group": "pyprof@1"
+        },
+        {
+          "command": "pyprof.profileTest",
+          "when": "resourceLangId == python && resourceFilename =~ /^test_|_test\\.py$/",
+          "group": "pyprof@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "pyprof.profileFile",
+          "when": "resourceLangId == python",
+          "group": "pyprof@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "pyprof.profileFile",
+          "when": "view == pyprof.sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "pyprof.attach",
+          "when": "view == pyprof.sessions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "pyprof.openProfile",
+          "when": "view == pyprof.sessions",
+          "group": "navigation@3"
+        },
+        {
+          "command": "pyprof.refreshProcesses",
+          "when": "view == pyprof.processes",
+          "group": "navigation"
+        },
+        {
+          "command": "pyprof.toggleHeat",
+          "when": "view == pyprof.hotspots",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "pyprof.attachProcess",
+          "when": "view == pyprof.processes && viewItem == process",
+          "group": "inline"
+        },
+        {
+          "command": "pyprof.stop",
+          "when": "view == pyprof.sessions && viewItem == session.live",
+          "group": "inline@1"
+        },
+        {
+          "command": "pyprof.openDashboard",
+          "when": "view == pyprof.sessions && viewItem =~ /^session/",
+          "group": "inline@0"
+        },
+        {
+          "command": "pyprof.snapshot",
+          "when": "view == pyprof.sessions && viewItem == session.live",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "pyprof.stopAndTerminate",
+          "when": "view == pyprof.sessions && viewItem == session.live",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "pyprof.saveProfile",
+          "when": "view == pyprof.sessions && viewItem =~ /^session/",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "pyprof.deleteSession",
+          "when": "view == pyprof.sessions && viewItem == session.saved",
+          "group": "inline@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "pyprof.attachProcess",
+          "when": "false"
+        },
+        {
+          "command": "pyprof.selectSession",
+          "when": "false"
+        },
+        {
+          "command": "pyprof.deleteSession",
+          "when": "false"
+        },
+        {
+          "command": "pyprof.revealFunction",
+          "when": "false"
+        },
+        {
+          "command": "pyprof.stop",
+          "when": "pyprof.hasLiveSession"
+        },
+        {
+          "command": "pyprof.stopAndTerminate",
+          "when": "pyprof.hasLiveSession"
+        },
+        {
+          "command": "pyprof.snapshot",
+          "when": "pyprof.hasLiveSession"
+        },
+        {
+          "command": "pyprof.mark",
+          "when": "pyprof.hasLiveSession"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pyprof",
+          "title": "Python Profiler",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "pyprof": [
+        {
+          "id": "pyprof.sessions",
+          "name": "Sessions"
+        },
+        {
+          "id": "pyprof.processes",
+          "name": "Python Processes",
+          "visibility": "collapsed"
+        },
+        {
+          "id": "pyprof.hotspots",
+          "name": "Hotspots"
+        },
+        {
+          "id": "pyprof.tasks",
+          "name": "Async Tasks",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "pyprof.sessions",
+        "contents": "Profile Python 3.15+ programs with the built-in Tachyon sampling profiler.\n[$(flame) Profile Current File](command:pyprof.profileFile)\n[$(debug-alt) Profile a Launch Configuration](command:pyprof.profileConfiguration)\n[$(plug) Attach to Running Process](command:pyprof.attach)\nIn any VS Code terminal you can also run `pyprof run <script | -m module | command>`.\n[Open a .pyprof file](command:pyprof.openProfile)"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "pyprof.profileViewer",
+        "displayName": "Python Profile",
+        "selector": [
+          {
+            "filenamePattern": "*.pyprof"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "python-profiler",
+        "label": "Python Profiler",
+        "languages": [
+          "python"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Python file to profile.",
+                "default": "${file}"
+              },
+              "module": {
+                "type": "string",
+                "description": "Module to run with `-m` (e.g. uvicorn, pytest, mypkg.cli)."
+              },
+              "args": {
+                "type": [
+                  "array",
+                  "string"
+                ],
+                "description": "Command line arguments.",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory.",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "description": "Extra environment variables.",
+                "default": {}
+              },
+              "envFile": {
+                "type": "string",
+                "description": "Path to a .env file."
+              },
+              "python": {
+                "type": "string",
+                "description": "Interpreter path. Defaults to the interpreter selected in the Python extension."
+              },
+              "profile": {
+                "type": "object",
+                "description": "Profiler options.",
+                "properties": {
+                  "rateHz": {
+                    "type": "number",
+                    "default": 1000
+                  },
+                  "memory": {
+                    "type": "boolean",
+                    "description": "Start tracemalloc at launch.",
+                    "default": false
+                  },
+                  "asyncioDebug": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "native": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          },
+          "attach": {
+            "properties": {
+              "processId": {
+                "type": [
+                  "number",
+                  "string"
+                ],
+                "description": "PID to attach to. Leave empty to pick a process.",
+                "default": "${command:pyprof.pickProcess}"
+              },
+              "profile": {
+                "type": "object",
+                "properties": {
+                  "rateHz": {
+                    "type": "number",
+                    "default": 1000
+                  },
+                  "memory": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "asyncioDebug": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "inject": {
+                    "type": "boolean",
+                    "description": "Inject the in-process agent (memory, asyncio debug) via sys.remote_exec.",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "name": "Profile: Current File",
+            "type": "python-profiler",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Python Profiler: Current File",
+            "body": {
+              "name": "Profile: Current File",
+              "type": "python-profiler",
+              "request": "launch",
+              "program": "^\"\\${file}\""
+            }
+          },
+          {
+            "label": "Python Profiler: Module",
+            "body": {
+              "name": "Profile: Module",
+              "type": "python-profiler",
+              "request": "launch",
+              "module": "${1:mypackage}",
+              "args": []
+            }
+          },
+          {
+            "label": "Python Profiler: FastAPI (uvicorn)",
+            "body": {
+              "name": "Profile: FastAPI",
+              "type": "python-profiler",
+              "request": "launch",
+              "module": "uvicorn",
+              "args": [
+                "${1:app.main}:app",
+                "--port",
+                "8000"
+              ],
+              "profile": {
+                "asyncioDebug": true
+              }
+            }
+          },
+          {
+            "label": "Python Profiler: Django",
+            "body": {
+              "name": "Profile: Django",
+              "type": "python-profiler",
+              "request": "launch",
+              "program": "^\"\\${workspaceFolder}/manage.py\"",
+              "args": [
+                "runserver",
+                "--noreload"
+              ]
+            }
+          },
+          {
+            "label": "Python Profiler: pytest",
+            "body": {
+              "name": "Profile: pytest",
+              "type": "python-profiler",
+              "request": "launch",
+              "module": "pytest",
+              "args": [
+                "-x",
+                "${1:tests}"
+              ]
+            }
+          },
+          {
+            "label": "Python Profiler: Attach",
+            "body": {
+              "name": "Profile: Attach",
+              "type": "python-profiler",
+              "request": "attach",
+              "processId": "^\"\\${command:pyprof.pickProcess}\""
+            }
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Python Profiler",
+      "properties": {
+        "pyprof.samplingRate": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 10,
+          "maximum": 20000,
+          "description": "Stack samples per second. Tachyon handles 1–10 kHz with negligible overhead on the target."
+        },
+        "pyprof.blockingSampling": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pause the target's threads for each sample (Tachyon --blocking). Removes discarded/torn samples on busy multi-threaded programs at the cost of more overhead."
+        },
+        "pyprof.memory.tracemallocOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start tracemalloc when a session starts (adds ~30–100% CPU and memory overhead to the target)."
+        },
+        "pyprof.memory.tracebackFrames": {
+          "type": "number",
+          "default": 16,
+          "description": "Frames recorded per allocation by tracemalloc."
+        },
+        "pyprof.asyncio.debugOnStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable asyncio debug mode (slow callback detection, never-awaited coroutines) when a session starts."
+        },
+        "pyprof.asyncio.slowCallbackMs": {
+          "type": "number",
+          "default": 100,
+          "description": "Callbacks that block the event loop longer than this are reported."
+        },
+        "pyprof.nativeFrames": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show <native> frames for time spent in C code."
+        },
+        "pyprof.heatMap.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show gutter heat and inline timings in the editor for the active session."
+        },
+        "pyprof.heatMap.metric": {
+          "type": "string",
+          "enum": [
+            "self",
+            "total"
+          ],
+          "default": "total",
+          "description": "Which per-line value drives the editor heat map."
+        },
+        "pyprof.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show profile CodeLens above hot functions."
+        },
+        "pyprof.followChildren": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
+          "default": "ask",
+          "description": "What to do when a profiled program starts Python child processes (multiprocessing, workers)."
+        },
+        "pyprof.terminalIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "Add the `pyprof` command to VS Code terminals (`pyprof run app.py`, `pyprof run uvicorn app:main`)."
+        },
+        "pyprof.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Save every finished session as a .pyprof file in the workspace storage so it shows up under Sessions."
+        },
+        "pyprof.openDashboardOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the dashboard when a session starts."
+        },
+        "pyprof.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Interpreter to use when the Python extension is unavailable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p . --noEmit",
+    "test": "node esbuild.mjs --tests && node --test dist-test/*.test.cjs",
+    "test:python": "python3.15 -W ignore python/tests/test_e2e.py",
+    "package": "node esbuild.mjs --production && vsce package --no-dependencies",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@vscode/python-extension": "^1.0.6"
+  }
+}

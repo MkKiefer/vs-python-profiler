@@ -1,0 +1,10 @@
+**
+!dist/extension.js
+!dist/webview.js
+!python/_vscode_pyprof/*.py
+!bin/**
+!media/**
+!package.json
+!README.md
+!LICENSE
+!CHANGELOG.md

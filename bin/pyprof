@@ -1,0 +1,12 @@
+#!/bin/sh
+# pyprof – profile a Python program from a VS Code terminal.
+# Uses the Python of the *active environment* (VIRTUAL_ENV / CONDA_PREFIX / PATH),
+# so `uv run pyprof run app.py` and activated venvs just work.
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -n "$PYPROF_PYTHON" ]; then PY=$PYPROF_PYTHON
+elif [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then PY=$VIRTUAL_ENV/bin/python
+elif [ -n "$CONDA_PREFIX" ] && [ -x "$CONDA_PREFIX/bin/python" ]; then PY=$CONDA_PREFIX/bin/python
+elif command -v python >/dev/null 2>&1; then PY=python
+else PY=python3
+fi
+exec "$PY" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from _vscode_pyprof.launcher import cli_main; cli_main()' "$DIR/python" "$@"

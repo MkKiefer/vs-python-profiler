@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-test/
+*.vsix
+__pycache__/
+*.pyc
+.pytest_cache/
+*.pyprof
+!test/fixtures/*.pyprof
