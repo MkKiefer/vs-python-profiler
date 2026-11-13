@@ -1,310 +1,211 @@
-"""Tachyon adapter: the only module that touches ``_remote_debugging``.
+"""The sampling loop: reads the target's stacks at a fixed rate and feeds the store."""
 
-We drive ``_remote_debugging.RemoteUnwinder`` directly instead of shelling out
-to ``python -m profiling.sampling`` so that we can
-
-* sample in ``all`` mode once and keep per-sample thread status bits, letting
-  the UI switch between wall / CPU / GIL views *after* recording,
-* interleave async-aware stacks, task graphs, GC stats, RSS/CPU and child
-  process discovery on one clock,
-* stream live deltas instead of writing a file at the end.
-
-``_remote_debugging`` is private API. Everything version specific is guarded
-here so a change in a future CPython only needs a fix in this file.
-"""
-
-from __future__ import annotations
-
-import os
-import sys
 import threading
 import time
+from abc import ABC, abstractmethod
 
-try:
-    import _remote_debugging as rd
-except ImportError:  # pragma: no cover - interpreter too old / unsupported
-    rd = None
-
-try:  # reuse Tachyon's own async stack linearisation when available
-    from profiling.sampling.collector import iter_async_frames as _iter_async_frames
-except Exception:  # pragma: no cover
-    _iter_async_frames = None
-
-from .procstats import ProcStats
-from .store import Store
-
-MODE_ALL = 3  # profiling.sampling.constants.PROFILING_MODE_ALL
+from _vscode_pyprof.options import CollectorOptions
+from _vscode_pyprof.procstats import ProcessStatsReader
+from _vscode_pyprof.store import Store
+from _vscode_pyprof.tachyon import Tachyon
 
 
-class SamplerError(RuntimeError):
-    pass
+class SamplerListener(ABC):
+    """Receives what the sampler notices about the target process."""
+
+    @abstractmethod
+    def on_target_exit(self, reason: str) -> None: ...
+
+    @abstractmethod
+    def on_children(self, pids: list[int]) -> None: ...
 
 
-def check_support():
-    if rd is None:
-        raise SamplerError(
-            "This interpreter has no _remote_debugging module; Python >= 3.15 is required."
-        )
+class _Periodic:
+    """Tells whether a low-frequency job is due."""
+
+    def __init__(self, seconds: float) -> None:
+        self._seconds = seconds
+        self._last = 0.0
+
+    def due(self, now: float) -> bool:
+        if now - self._last < self._seconds:
+            return False
+        self._last = now
+        return True
 
 
-def resolve_python_pid(pid: int, timeout: float = 2.0) -> int:
-    """On Windows a venv ``python.exe`` is a launcher; profile its child instead."""
-    if os.name != "nt" or rd is None:
-        return pid
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            if rd.is_python_process(pid):
-                kids = [c for c in rd.get_child_pids(pid, recursive=False) if rd.is_python_process(c)]
-                if len(kids) == 1:
-                    return kids[0]
-                if not kids:
-                    return pid
-        except (OSError, RuntimeError):
-            pass
-        if time.monotonic() > deadline:
-            return pid
-        time.sleep(0.05)
+class Sampler:
+    """Samples one target process on its own thread until stopped or the target exits."""
 
+    _RESYNC_AFTER = 0.5  # seconds behind schedule before we skip instead of catching up
+    _ASYNC_STACKS_HZ = 200  # async-aware stacks are costlier: cap their rate
+    _GC_SEEN_LIMIT = 10_000
 
-def make_unwinder(pid: int, native: bool, gc: bool):
-    check_support()
-    attempts = [
-        dict(all_threads=True, mode=MODE_ALL, native=native, gc=gc,
-             skip_non_matching_threads=False, cache_frames=True),
-        dict(all_threads=True, mode=MODE_ALL, native=native, gc=gc),
-        dict(all_threads=True),
-    ]
-    last = None
-    for kw in attempts:
-        try:
-            return rd.RemoteUnwinder(pid, **kw)
-        except TypeError as e:  # keyword not supported by this build
-            last = e
-        except PermissionError as e:
-            raise SamplerError(permission_hint(pid, e)) from e
-        except RuntimeError as e:
-            msg = str(e)
-            if "ermission" in msg or "Operation not permitted" in msg:
-                raise SamplerError(permission_hint(pid, e)) from e
-            raise SamplerError(f"Cannot attach to process {pid}: {msg}") from e
-        except ProcessLookupError as e:
-            raise SamplerError(f"Process {pid} does not exist") from e
-    raise SamplerError(f"Unsupported _remote_debugging API: {last}")
+    def __init__(
+        self,
+        tachyon: Tachyon,
+        store: Store,
+        stats_reader: ProcessStatsReader,
+        options: CollectorOptions,
+        listener: SamplerListener,
+    ) -> None:
+        self._tachyon = tachyon
+        self._store = store
+        self._stats_reader = stats_reader
+        self._listener = listener
+        self._interval = 1.0 / options.rate_hz
+        self._blocking = options.blocking and tachyon.supports_blocking()
+        self._async_aware = options.async_aware
+        self._async_stacks = options.async_aware and tachyon.supports_async_stacks()
+        self._async_every = max(1, options.rate_hz // self._ASYNC_STACKS_HZ)
 
+        self._thread = threading.Thread(target=self._run, name="pyprof-sampler", daemon=True)
+        self._stop = threading.Event()
+        self._ticks = 0
+        self._known_children: set[int] = set()
+        self._gc_seen: dict[tuple[int, int, int], None] = {}  # insertion ordered, oldest first
+        self._last_cpu: tuple[float, float] | None = None
+        self._rate_window = (0, time.perf_counter())
+        self._tasks_job = _Periodic(0.2)
+        self._stats_job = _Periodic(0.5)
+        self._gc_job = _Periodic(1.0)
+        self._children_job = _Periodic(2.0)
 
-def permission_hint(pid: int, err: BaseException) -> str:
-    base = f"Permission denied while attaching to PID {pid} ({err})."
-    if sys.platform == "linux":
-        scope = ""
-        try:
-            with open("/proc/sys/kernel/yama/ptrace_scope") as f:
-                scope = f.read().strip()
-        except OSError:
-            pass
-        hint = (
-            " Linux restricts attaching to non-child processes"
-            + (f" (kernel.yama.ptrace_scope={scope})" if scope else "")
-            + ". Start the program with the profiler (Run with Profiler / `pyprof run`),"
-            " or run `sudo sysctl kernel.yama.ptrace_scope=0`. In containers add `--cap-add=SYS_PTRACE`."
-        )
-    elif sys.platform == "darwin":
-        hint = (
-            " macOS only allows reading another process's memory as root."
-            " Use 'Attach (elevated)' or start the program with the profiler."
-        )
-    else:
-        hint = " The target probably runs elevated or as another user; run VS Code as Administrator."
-    return base + hint
+    @property
+    def pid(self) -> int:
+        return self._tachyon.pid
 
+    def start(self) -> None:
+        self._thread.start()
 
-class Sampler(threading.Thread):
-    def __init__(self, pid: int, store: Store, *, rate_hz: int = 1000, native=False, gc=True,
-                 async_aware=True, blocking=False, on_exit=None, on_children=None):
-        super().__init__(name="pyprof-sampler", daemon=True)
-        self.pid = resolve_python_pid(pid)
-        self.store = store
-        self.interval = 1.0 / max(1, rate_hz)
-        self.async_aware = async_aware
-        self.blocking = blocking and hasattr(rd.RemoteUnwinder, "pause_threads")
-        self.on_exit = on_exit
-        self.on_children = on_children
-        self._stop_ev = threading.Event()
-        self.unwinder = make_unwinder(self.pid, native, gc)
-        self._async_every = max(1, int(rate_hz // 200))
-        self._known_children: set = set()
-        self.exit_reason = None
-        try:
-            self._gc_monitor = rd.GCMonitor(self.pid) if hasattr(rd, "GCMonitor") else None
-        except Exception:
-            self._gc_monitor = None
-        self._gc_seen: set = set()
-
-    def stop(self):
-        self._stop_ev.set()
+    def stop(self, timeout: float = 2.0) -> None:
+        """Stop sampling and wait for the loop to finish (safe to call from the sampler thread)."""
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout)
 
     # ------------------------------------------------------------------ loop
-    def run(self):
-        store = self.store
-        unwinder = self.unwinder
-        interval = self.interval
-        procstats = ProcStats(self.pid)
-        next_t = time.perf_counter()
-        n = 0
-        last_stats = last_tasks = last_gc = last_kids = 0.0
-        last_cpu = None
-        rate_window = [0, time.perf_counter()]
+    def _run(self) -> None:
+        exit_reason: str | None = None
+        next_tick = time.perf_counter()
         try:
-            while not self._stop_ev.is_set():
+            while not self._stop.is_set():
                 now = time.perf_counter()
-                if now < next_t:
-                    delay = next_t - now
+                if now < next_tick:
+                    delay = next_tick - now
                     if delay > 0.0002:
                         time.sleep(delay * 0.9)
                     continue
-                next_t += interval
-                if now - next_t > 0.5:  # we fell far behind (suspend, GC...), resync
-                    next_t = now + interval
-                t = (now - store.t0) * 1000.0
-                try:
-                    if self.blocking:
-                        unwinder.pause_threads()
-                        try:
-                            trace = unwinder.get_stack_trace()
-                        finally:
-                            unwinder.resume_threads()
-                    else:
-                        trace = unwinder.get_stack_trace()
-                    store.add_thread_sample(t, trace)
-                    n += 1
-                    if self.async_aware and _iter_async_frames and n % self._async_every == 0:
-                        self._sample_async(t)
-                except ProcessLookupError:
-                    self.exit_reason = "exited"
+                next_tick += self._interval
+                if now - next_tick > self._RESYNC_AFTER:  # suspend, long GC pause…
+                    next_tick = now + self._interval
+                t = self._store.to_session_ms(now)
+                if not self._sample(t):
+                    exit_reason = "exited"
                     break
-                except (RuntimeError, UnicodeDecodeError, MemoryError, OSError):
-                    # torn read of a stack that changed while we read it: discard
-                    # (same as Tachyon's "error rate"; use blocking mode to avoid)
-                    store.stats["errors"] += 1
-                    if not _alive(self.pid):
-                        self.exit_reason = "exited"
-                        break
-
-                # -- low frequency work ------------------------------------
-                if now - last_tasks >= 0.2 and self.async_aware:
-                    last_tasks = now
-                    self._sample_tasks(t)
-                if now - last_stats >= 0.5:
-                    last_stats = now
-                    r = procstats.read()
-                    if r is not None:
-                        rss, cpu = r
-                        store.add_track("rss", t, rss)
-                        if last_cpu is not None and now > last_cpu[0]:
-                            pct = 100.0 * (cpu - last_cpu[1]) / (now - last_cpu[0])
-                            store.add_track("cpu", t, round(max(0.0, pct), 1))
-                        last_cpu = (now, cpu)
-                    cnt, t_prev = rate_window
-                    if now > t_prev:
-                        store.stats["rateHz"] = round((n - cnt) / (now - t_prev), 1)
-                    rate_window[:] = [n, now]
-                if now - last_gc >= 1.0:
-                    last_gc = now
-                    self._sample_gc(t)
-                if self.on_children and now - last_kids >= 2.0:
-                    last_kids = now
-                    self._check_children()
+                self._run_periodic_jobs(now, t)
         finally:
-            procstats.close()
-            if self.exit_reason and self.on_exit:
-                self.on_exit(self.exit_reason)
+            self._stats_reader.close()
+            if exit_reason is not None:
+                self._listener.on_target_exit(exit_reason)
+
+    def _sample(self, t: float) -> bool:
+        """Take one sample. Returns ``False`` once the target is gone."""
+        try:
+            self._store.add_thread_sample(t, self._tachyon.sample_threads(blocking=self._blocking))
+            self._ticks += 1
+            if self._async_stacks and self._ticks % self._async_every == 0:
+                self._sample_async_stacks(t)
+        except ProcessLookupError:
+            return False
+        except Tachyon.READ_ERRORS:
+            # torn read of a stack that changed while we read it: discard
+            # (same as Tachyon's "error rate"; blocking mode avoids it)
+            self._store.record_error()
+            return self._tachyon.is_alive()
+        return True
+
+    def _run_periodic_jobs(self, now: float, t: float) -> None:
+        if self._async_aware and self._tasks_job.due(now):
+            self._sample_tasks(t)
+        if self._stats_job.due(now):
+            self._sample_process_stats(now, t)
+        if self._gc_job.due(now):
+            self._sample_gc(t)
+        if self._children_job.due(now):
+            children = self._tachyon.python_children(self._known_children)
+            if children:
+                self._listener.on_children(children)
 
     # ----------------------------------------------------------- async/tasks
-    def _sample_async(self, t):
+    def _sample_async_stacks(self, t: float) -> None:
         try:
-            awaited = self.unwinder.get_async_stack_trace()
-        except Exception:
+            running = self._tachyon.running_tasks()
+            if running:
+                self._store.add_async_sample(t, list(self._tachyon.linearise(running)))
+        except ProcessLookupError:
+            raise
+        except Tachyon.READ_ERRORS:
             return
-        if awaited:
-            self.store.add_async_sample(t, list(_iter_async_frames(awaited)))
 
-    def _sample_tasks(self, t):
+    def _sample_tasks(self, t: float) -> None:
         try:
-            all_awaited = self.unwinder.get_all_awaited_by()
-        except Exception:
+            all_tasks = self._tachyon.all_tasks()
+        except Tachyon.READ_ERRORS:
             return
-        if not any(info.awaited_by for info in all_awaited):
-            if not self.store.tasks:
-                return
-        running = set()
+        if not self._store.has_tasks() and not any(info.awaited_by for info in all_tasks):
+            return  # not an asyncio program (yet)
+        running: set[int] = set()
         try:
-            for info in self.unwinder.get_async_stack_trace():
+            for info in self._tachyon.running_tasks():
                 if info.awaited_by:
                     running.add(info.awaited_by[0].task_id)
-        except Exception:
-            pass
-        self.store.update_tasks(t, all_awaited, running)
+        except Tachyon.READ_ERRORS:
+            pass  # states fall back to "waiting" for this tick
+        self._store.update_tasks(t, all_tasks, running)
+
+    # ---------------------------------------------------------- process stats
+    def _sample_process_stats(self, now: float, t: float) -> None:
+        stats = self._stats_reader.read()
+        if stats is not None:
+            self._store.add_track("rss", t, stats.rss_bytes)
+            if self._last_cpu is not None and now > self._last_cpu[0]:
+                percent = 100.0 * (stats.cpu_seconds - self._last_cpu[1]) / (now - self._last_cpu[0])
+                self._store.add_track("cpu", t, round(max(0.0, percent), 1))
+            self._last_cpu = (now, stats.cpu_seconds)
+        ticks_before, time_before = self._rate_window
+        if now > time_before:
+            self._store.set_sampling_rate(round((self._ticks - ticks_before) / (now - time_before), 1))
+        self._rate_window = (self._ticks, now)
 
     # -------------------------------------------------------------------- gc
-    def _sample_gc(self, t):
+    def _sample_gc(self, t: float) -> None:
         try:
-            if self._gc_monitor is not None:
-                stats = self._gc_monitor.get_gc_stats()
-            elif hasattr(rd, "get_gc_stats"):
-                stats = rd.get_gc_stats(self.pid)
-            else:
-                return
-        except Exception:
+            collections = self._tachyon.gc_stats()
+        except Tachyon.READ_ERRORS:
             return
-        store = self.store
         now_ns = time.perf_counter_ns()
-        for s in stats:
-            key = (s.gen, s.ts_start, s.collections)
+        for gc in collections:
+            key = (gc.gen, gc.ts_start, gc.collections)
             if key in self._gc_seen:
                 continue
-            self._gc_seen.add(key)
-            ts = store.ns_to_t(s.ts_start)
-            # ts_start is CLOCK_MONOTONIC on Linux; if clocks differ, use arrival time
-            if s.ts_start <= 0 or s.ts_start > now_ns + 60e9 or ts < -1000:
-                ts = t
-            if ts < 0:
-                continue  # collections from before the session started
-            dur = (s.ts_stop - s.ts_start) / 1e6 if s.ts_stop >= s.ts_start else 0.0
-            store.add_gc(ts, dur, s.gen, s.collected, getattr(s, "heap_size", 0))
-        if len(self._gc_seen) > 10000:
-            self._gc_seen = set(list(self._gc_seen)[-2000:])
-
-    # -------------------------------------------------------------- children
-    def _check_children(self):
-        try:
-            kids = rd.get_child_pids(self.pid, recursive=True)
-        except Exception:
-            return
-        new = []
-        for k in kids:
-            if k in self._known_children:
-                continue
-            self._known_children.add(k)
-            try:
-                if rd.is_python_process(k):
-                    new.append(k)
-            except Exception:
-                pass
-        if new:
-            self.on_children(new)
+            self._gc_seen[key] = None
+            started = self._store.ns_to_session_ms(gc.ts_start)
+            # ts_start is CLOCK_MONOTONIC on Linux; if the clocks differ, use the arrival time
+            if gc.ts_start <= 0 or gc.ts_start > now_ns + 60e9 or started < -1000:
+                started = t
+            if started < 0:
+                continue  # collected before the session started
+            duration_ms = (gc.ts_stop - gc.ts_start) / 1e6 if gc.ts_stop >= gc.ts_start else 0.0
+            self._store.add_gc(started, duration_ms, gc.gen, gc.collected, gc.heap_size)
+        while len(self._gc_seen) > self._GC_SEEN_LIMIT:
+            del self._gc_seen[next(iter(self._gc_seen))]
 
 
-def _alive(pid: int) -> bool:
-    if os.name == "nt":
-        try:
-            rd.RemoteUnwinder(pid)
-            return True
-        except Exception:
-            return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+class SamplerFactory:
+    """Builds a sampler attached to a process (the seam tests replace)."""
+
+    def create(self, pid: int, store: Store, options: CollectorOptions, listener: SamplerListener) -> Sampler:
+        """Attach to ``pid``. Raises ``TachyonError`` if the process cannot be read."""
+        tachyon = Tachyon(pid, native=options.native, gc=options.gc)
+        return Sampler(tachyon, store, ProcessStatsReader.for_pid(tachyon.pid), options, listener)

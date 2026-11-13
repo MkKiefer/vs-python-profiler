@@ -1,0 +1,58 @@
+[project]
+name = "vscode-pyprof-collector"
+version = "0.1.0"
+description = "Collector, launcher and in-process agent of the Python Profiler VS Code extension"
+requires-python = ">=3.15"
+dependencies = []
+
+[tool.pdm]
+distribution = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.5",
+    "mypy>=2.4.1",
+    "vulture>=2.16",
+]
+
+[tool.pdm.scripts]
+_.env = { PYTHONPATH = "." }
+lint = "ruff check _vscode_pyprof tests"
+fmt = "ruff format _vscode_pyprof tests"
+"fmt:check" = "ruff format --check _vscode_pyprof tests"
+typecheck = "mypy _vscode_pyprof tests/unit"
+deadcode = "vulture _vscode_pyprof tests/unit"
+test = "python -m unittest discover -s tests/unit -t ."
+"test:integration" = "python -W ignore -m unittest discover -s tests/integration -t ."
+check = { composite = ["lint", "fmt:check", "typecheck", "deadcode", "test"] }
+
+[tool.ruff]
+target-version = "py315"
+line-length = 120
+
+# These run with whatever interpreter the user has (to list processes or to report
+# a clear "Python 3.15 required" error), so they must stay valid on Python 3.10.
+[tool.ruff.per-file-target-version]
+"_vscode_pyprof/__init__.py" = "py310"
+"_vscode_pyprof/cli.py" = "py310"
+"_vscode_pyprof/launcher.py" = "py310"
+"_vscode_pyprof/processes.py" = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC"]
+ignore = [
+    "SIM105", # try/except/pass reads clearer than contextlib.suppress in import-sensitive code
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.15"
+mypy_path = "stubs"
+
+# Tests replace single methods on real, typed collaborators (unittest guide, pattern B).
+[[tool.mypy.overrides]]
+module = "tests.*"
+disable_error_code = ["method-assign"]
+
+[tool.vulture]
+min_confidence = 80

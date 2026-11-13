@@ -2,7 +2,7 @@
 
 Run with a Python >= 3.15 interpreter:
 
-    python3.15 -m pytest python/tests -q        (or)    python3.15 python/tests/test_e2e.py
+    cd python && pdm run test:integration        (or)    python3.15 python/tests/integration/test_e2e.py
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import threading
 import time
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 PYDIR = os.path.join(ROOT, "python")
 APPS = os.path.join(ROOT, "test-apps")
 BOOT = "import sys; sys.path.insert(0, sys.argv.pop(1)); from _vscode_pyprof.{mod} import {fn}; {fn}()"
@@ -28,14 +28,27 @@ class Client:
     def __init__(self):
         self.proc = subprocess.Popen(
             [sys.executable, "-I", "-c", BOOT.format(mod="cli", fn="main"), PYDIR, "serve"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
         )
         self.ids = 0
         self.responses: dict = {}
-        self.notes: "queue.Queue" = queue.Queue()
+        self.notes: queue.Queue = queue.Queue()
         self.cv = threading.Condition()
-        self.model = {"frames": [], "stacks": [], "samples": 0, "asyncSamples": 0, "tasks": {},
-                      "tracks": {}, "gc": 0, "sampleStacks": set(), "events": [], "threads": {}, "snapshots": []}
+        self.model = {
+            "frames": [],
+            "stacks": [],
+            "samples": 0,
+            "asyncSamples": 0,
+            "tasks": {},
+            "tracks": {},
+            "gc": 0,
+            "sampleStacks": set(),
+            "events": [],
+            "threads": {},
+            "snapshots": [],
+        }
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -110,9 +123,19 @@ def launch_target(client, info, app, *args, options=None):
     if options:
         env["PYPROF_OPTIONS"] = json.dumps(options)
     return subprocess.Popen(
-        [sys.executable, "-c", BOOT.format(mod="launcher", fn="cli_main"), PYDIR, "run",
-         os.path.join(APPS, app), *args],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=APPS,
+        [
+            sys.executable,
+            "-c",
+            BOOT.format(mod="launcher", fn="cli_main"),
+            PYDIR,
+            "run",
+            os.path.join(APPS, app),
+            *args,
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=APPS,
     )
 
 
@@ -154,8 +177,7 @@ class E2E(unittest.TestCase):
     def test_launch_memory_snapshots(self):
         c = Client()
         try:
-            info = c.call("initialize", {"options": {"rateHz": 200, "stripLauncher": True,
-                                                     "tracemalloc": True}})
+            info = c.call("initialize", {"options": {"rateHz": 200, "stripLauncher": True, "tracemalloc": True}})
             p = launch_target(c, info, "leaky.py", "6", options={"tracemalloc": True})
             c.wait_note("agent", lambda a: a["connected"])
             time.sleep(1.5)
@@ -163,9 +185,13 @@ class E2E(unittest.TestCase):
             time.sleep(1.5)
             b = c.call("snapshot", {"label": "B"})
             self.assertGreater(b["totalSize"], a["totalSize"])
-            diff = c.call("diff", {"a": a["id"], "b": b["id"]})
-            top_sid = diff["rows"][0][0]
             time.sleep(0.4)
+            before, after = (
+                {sid: size for sid, size, _count in snap["entries"]}
+                for snap in c.model["snapshots"]
+                if snap["id"] in (a["id"], b["id"])
+            )
+            top_sid = max(after, key=lambda sid: after[sid] - before.get(sid, 0))
             # walk the top growing stack: should end in Record.__init__ / handle_request
             names = []
             sid = top_sid
@@ -182,8 +208,9 @@ class E2E(unittest.TestCase):
             c.close()
 
     def test_attach_asyncio(self):
-        target = subprocess.Popen([sys.executable, os.path.join(APPS, "async_storm.py"), "8"],
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        target = subprocess.Popen(
+            [sys.executable, os.path.join(APPS, "async_storm.py"), "8"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
         c = Client()
         try:
             time.sleep(0.5)
@@ -231,12 +258,18 @@ class E2E(unittest.TestCase):
             env = dict(os.environ, PYPROF_HUB=f"127.0.0.1:{port}:{token}")
             env.pop("PYPROF_AGENT", None)
             shim = os.path.join(ROOT, "bin", "pyprof")
-            cmd = ([sys.executable, "-c", BOOT.format(mod="launcher", fn="cli_main"), PYDIR]
-                   if os.name == "nt" else [shim])
+            cmd = (
+                [sys.executable, "-c", BOOT.format(mod="launcher", fn="cli_main"), PYDIR] if os.name == "nt" else [shim]
+            )
             env["PYPROF_PYTHON"] = sys.executable
             # `python app.py` form, like a user would type after `pyprof run`
-            p = subprocess.run(cmd + ["run", "--", "python", os.path.join(APPS, "cpu_bound.py"), "2"],
-                               env=env, capture_output=True, timeout=60, cwd=APPS)
+            p = subprocess.run(
+                [*cmd, "run", "--", "python", os.path.join(APPS, "cpu_bound.py"), "2"],
+                env=env,
+                capture_output=True,
+                timeout=60,
+                cwd=APPS,
+            )
             self.assertEqual(p.returncode, 0, p.stderr.decode())
             self.assertIn(b"done", p.stdout)
             self.assertEqual(result["hello"]["token"], token)

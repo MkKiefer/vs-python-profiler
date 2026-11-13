@@ -9,7 +9,11 @@ OS) and provides what cannot be read from outside:
   awaited coroutines, destroyed pending tasks)
 * thread names, object type counts
 
-Everything here is stdlib-only and must be cheap when idle.
+Everything here is stdlib-only and must be cheap when idle. Because this code
+runs in the *user's* process, modules the program may not use itself
+(``asyncio``, ``tracemalloc``, ``logging``, ``warnings``, ``gc``) are imported
+lazily, only when the matching feature is used: importing them up front would
+slow the program down and change what the profile shows.
 """
 
 import json
@@ -19,381 +23,465 @@ import socket
 import sys
 import threading
 import time
+from collections import deque
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
-_agent = None
-_lock = threading.Lock()
+from _vscode_pyprof.wire import JsonObject, WireReader
 
-
-def start(host, port, token, options=None):
-    """Idempotently start the agent. Safe to call from ``sys.remote_exec``."""
-    global _agent
-    with _lock:
-        if _agent is not None and _agent.is_alive():
-            return _agent
-        _agent = Agent(host, int(port), token, options or {})
-        _agent.start()
-        return _agent
+if TYPE_CHECKING:
+    import asyncio
+    import logging
+    import tracemalloc
+    from types import FrameType
+    from typing import TextIO
 
 
-class _AsyncioLogHandler:
-    """Lazily created logging.Handler capturing asyncio debug warnings."""
+class _LoopProbe:
+    """Lag measurement state of one running event loop."""
 
-    def __init__(self, agent):
+    __slots__ = ("loop", "max_lag_ms", "pending_since", "thread_name")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, thread_name: str) -> None:
+        self.loop = loop
+        self.thread_name = thread_name
+        self.pending_since: float | None = None  # a probe was scheduled and has not run yet
+        self.max_lag_ms = 0.0
+
+
+class _AsyncioDebugCapture:
+    """Collects asyncio debug output (log records and never-awaited warnings) as events."""
+
+    def __init__(self, emit: Callable[[JsonObject], None]) -> None:
+        self._emit = emit
+        self._handler: logging.Handler | None = None
+        self._original_showwarning: Callable[..., None] | None = None
+
+    def install(self) -> None:
         import logging
+        import warnings
 
-        class H(logging.Handler):
-            def emit(self, record):
-                try:
-                    agent.on_asyncio_log(record)
-                except Exception:
-                    pass
+        if self._handler is None:
+            capture = self
 
-        self.handler = H(level=logging.WARNING)
-        self.logger = logging.getLogger("asyncio")
+            class Handler(logging.Handler):
+                def emit(self, record: logging.LogRecord) -> None:
+                    try:
+                        capture._on_log_record(record)
+                    except Exception:  # never let profiling break the program's logging
+                        return
 
-    def install(self):
-        if self.handler not in self.logger.handlers:
-            self.logger.addHandler(self.handler)
+            self._handler = Handler(level=logging.WARNING)
+        logger = logging.getLogger("asyncio")
+        if self._handler not in logger.handlers:
+            logger.addHandler(self._handler)
+        if self._original_showwarning is None:
+            self._original_showwarning = warnings.showwarning
+            warnings.showwarning = self._showwarning
 
-    def remove(self):
+    def remove(self) -> None:
+        if self._handler is not None:
+            import logging
+
+            logging.getLogger("asyncio").removeHandler(self._handler)
+        if self._original_showwarning is not None:
+            import warnings
+
+            warnings.showwarning = self._original_showwarning
+            self._original_showwarning = None
+
+    def _showwarning(
+        self,
+        message: Warning | str,
+        category: type[Warning],
+        filename: str,
+        lineno: int,
+        file: TextIO | None = None,
+        line: str | None = None,
+    ) -> None:
         try:
-            self.logger.removeHandler(self.handler)
-        except Exception:
+            text = str(message)
+            if issubclass(category, RuntimeWarning) and "never awaited" in text:
+                self._emit(
+                    {
+                        "t": time.perf_counter(),
+                        "kind": "never-awaited",
+                        "message": text,
+                        "file": filename,
+                        "line": lineno,
+                    }
+                )
+        except Exception:  # never let profiling break the program's warnings
             pass
+        if self._original_showwarning is not None:
+            self._original_showwarning(message, category, filename, lineno, file, line)
+
+    def _on_log_record(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        event: JsonObject = {
+            "t": time.perf_counter(),
+            "kind": "asyncio",
+            "message": message[:2000],
+            "thread": threading.current_thread().name,
+        }
+        if message.startswith("Executing") and "took" in message:
+            event["kind"] = "slow-callback"
+            args = record.args
+            if isinstance(args, tuple) and len(args) >= 2 and isinstance(args[-1], (int, float)):
+                event["seconds"] = float(args[-1])
+                event["handle"] = str(args[0])[:500]
+        elif "was destroyed but it is pending" in message:
+            event["kind"] = "task-destroyed-pending"
+        elif "exception was never retrieved" in message:
+            event["kind"] = "exception-never-retrieved"
+        self._emit(event)
 
 
 class Agent(threading.Thread):
-    METRICS_INTERVAL = 0.5
-    PROBE_INTERVAL = 0.1
+    _METRICS_INTERVAL = 0.5
+    _PROBE_INTERVAL = 0.1
+    _LOOP_SCAN_INTERVAL = 2.0
+    _CONNECT_TIMEOUT = 10.0
+    _SOURCE_FILE = os.path.abspath(__file__)
 
-    def __init__(self, host, port, token, options):
+    def __init__(self, host: str, port: int, token: str, options: WireReader) -> None:
         super().__init__(name="pyprof-agent", daemon=True)
-        self.addr = (host, port)
-        self.token = token
-        self.options = options
-        self.sock = None
-        self._wlock = threading.Lock()
+        self._address = (host, port)
+        self._token = token
+        self._options = options
+        self._socket: socket.socket | None = None
+        self._write_lock = threading.Lock()
         self._halt = threading.Event()
-        self._loops = {}  # id(loop) -> [loop, thread_name, pending_since, max_lag]
+        self._loops: dict[int, _LoopProbe] = {}
         self._last_loop_scan = 0.0
         self._asyncio_debug = False
-        self._slow_ms = 100
-        self._log_handler = None
-        self._orig_showwarning = None
-        self._events = []
+        self._slow_callback_ms = 100.0
+        self._events: deque[JsonObject] = deque()  # appended from any thread
+        self._debug_capture = _AsyncioDebugCapture(self._events.append)
         self._started_tracemalloc = False
+        self._commands: dict[str, Callable[[WireReader], JsonObject]] = {
+            "tracemalloc_start": self._cmd_tracemalloc_start,
+            "tracemalloc_stop": self._cmd_tracemalloc_stop,
+            "snapshot": self._cmd_snapshot,
+            "object_counts": self._cmd_object_counts,
+            "asyncio_debug": self._cmd_asyncio_debug,
+            "ping": self._cmd_ping,
+            "shutdown": self._cmd_shutdown,
+        }
+
+    @property
+    def connected(self) -> bool:
+        return self._socket is not None
 
     # ------------------------------------------------------------- transport
-    def send(self, msg):
-        data = (json.dumps(msg, separators=(",", ":"), default=repr) + "\n").encode("utf-8")
-        with self._wlock:
-            if self.sock is None:
-                return
-            try:
-                self.sock.sendall(data)
-            except OSError:
-                self._halt.set()
-
-    def run(self):
+    def run(self) -> None:
         try:
-            self.sock = socket.create_connection(self.addr, timeout=10)
-        except OSError as e:
-            sys.stderr.write("[pyprof] agent could not connect to collector: %r\n" % (e,))
+            self._socket = socket.create_connection(self._address, timeout=self._CONNECT_TIMEOUT)
+        except OSError as error:
+            sys.stderr.write(f"[pyprof] agent could not connect to collector: {error!r}\n")
             return
-        self.sock.settimeout(None)  # blocking sends; reads are polled with select()
-        self.send({
-            "type": "hello", "token": self.token, "pid": os.getpid(),
-            "executable": sys.executable, "argv": sys.argv, "cwd": os.getcwd(),
-            "version": sys.version.split()[0], "threads": self._threads(),
-        })
-        if self.options.get("tracemalloc"):
-            self.cmd_tracemalloc_start({"frames": self.options.get("tracemallocFrames", 16)})
-        if self.options.get("asyncioDebug"):
-            self.cmd_asyncio_debug({"enabled": True, "slowMs": self.options.get("slowCallbackMs", 100)})
-        buf = b""
-        last_metrics = 0.0
+        self._socket.settimeout(None)  # blocking sends; reads are polled with select()
+        self._send(
+            {
+                "type": "hello",
+                "token": self._token,
+                "pid": os.getpid(),
+                "executable": sys.executable,
+                "argv": sys.argv,
+                "cwd": os.getcwd(),
+                "version": sys.version.split()[0],
+                "threads": self._thread_names(),
+            }
+        )
         try:
-            while not self._halt.is_set():
-                readable, _, _ = select.select([self.sock], [], [], self.PROBE_INTERVAL)
-                if readable:
-                    chunk = self.sock.recv(65536)
-                    if not chunk:
-                        break
-                    buf += chunk
-                    while b"\n" in buf:
-                        line, buf = buf.split(b"\n", 1)
-                        if line.strip():
-                            self._dispatch(json.loads(line))
-                now = time.perf_counter()
-                self._probe_loops(now)
-                if now - last_metrics >= self.METRICS_INTERVAL:
-                    last_metrics = now
-                    self._send_metrics()
-        except (OSError, ValueError):
-            pass
+            self._apply_start_options()
+            self._serve(self._socket)
+        except OSError, ValueError:
+            pass  # collector went away or sent garbage: stop quietly, never disturb the program
         finally:
             self._cleanup()
 
-    def _dispatch(self, msg):
-        method = msg.get("method", "")
-        handler = getattr(self, "cmd_" + method, None)
-        try:
-            if handler is None:
-                raise ValueError("unknown agent command %r" % method)
-            result = handler(msg.get("params") or {})
-            self.send({"type": "result", "id": msg.get("id"), "result": result})
-        except Exception as e:
-            self.send({"type": "result", "id": msg.get("id"), "error": "%s: %s" % (type(e).__name__, e)})
+    def _apply_start_options(self) -> None:
+        if self._options.get_bool("tracemalloc", False):
+            self._cmd_tracemalloc_start(WireReader({"frames": self._options.get_int("tracemallocFrames", 16)}))
+        if self._options.get_bool("asyncioDebug", False):
+            self._slow_callback_ms = self._options.get_float("slowCallbackMs", self._slow_callback_ms)
+            self._set_asyncio_debug(True)
 
-    def _cleanup(self):
-        try:
-            if self._started_tracemalloc:
-                import tracemalloc
+    def _serve(self, sock: socket.socket) -> None:
+        buffer = b""
+        last_metrics = 0.0
+        while not self._halt.is_set():
+            readable, _, _ = select.select([sock], [], [], self._PROBE_INTERVAL)
+            if readable:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if line.strip():
+                        self._dispatch(WireReader.of(json.loads(line)))
+            now = time.perf_counter()
+            self._probe_loops(now)
+            if now - last_metrics >= self._METRICS_INTERVAL:
+                last_metrics = now
+                self._send_metrics(now)
 
-                tracemalloc.stop()
-        except Exception:
-            pass
+    def _dispatch(self, request: WireReader) -> None:
+        method = request.get_optional_str("method") or ""
+        reply: JsonObject = {"type": "result", "id": request.get_raw("id")}
+        try:
+            command = self._commands.get(method)
+            if command is None:
+                raise ValueError(f"unknown agent command {method!r}")
+            reply["result"] = command(request.get_object("params"))
+        except Exception as error:  # report every failure to the collector instead of dying
+            reply["error"] = f"{type(error).__name__}: {error}"
+        self._send(reply)
+
+    def _send(self, message: JsonObject) -> None:
+        data = (json.dumps(message, separators=(",", ":"), default=repr) + "\n").encode("utf-8")
+        with self._write_lock:
+            if self._socket is None:
+                return
+            try:
+                self._socket.sendall(data)
+            except OSError:
+                self._halt.set()
+
+    def _cleanup(self) -> None:
+        """Undo everything the agent changed in the program."""
+        if self._started_tracemalloc:
+            import tracemalloc
+
+            tracemalloc.stop()
+            self._started_tracemalloc = False
         self._set_asyncio_debug(False)
-        try:
-            self.sock.close()
-        except Exception:
-            pass
-        self.sock = None
+        with self._write_lock:
+            sock, self._socket = self._socket, None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
     # --------------------------------------------------------------- metrics
-    def _threads(self):
-        return [[t.ident, getattr(t, "native_id", None), t.name] for t in threading.enumerate()
-                if t is not self]
+    def _thread_names(self) -> list[list[object]]:
+        return [[t.ident, t.native_id, t.name] for t in threading.enumerate() if t is not self]
 
-    def _send_metrics(self):
-        m = {"type": "metrics", "threads": self._threads()}
+    def _send_metrics(self, now: float) -> None:
+        metrics: JsonObject = {"type": "metrics", "threads": self._thread_names()}
         if "tracemalloc" in sys.modules:
             import tracemalloc
 
             if tracemalloc.is_tracing():
-                cur, peak = tracemalloc.get_traced_memory()
-                m["traced"] = cur
-                m["tracedPeak"] = peak
-                m["tracemallocOverhead"] = tracemalloc.get_tracemalloc_memory()
-        lags = []
-        now = time.perf_counter()
-        for key, rec in list(self._loops.items()):
-            loop, tname, pending, max_lag = rec
-            lag = max_lag
-            if pending is not None:
-                lag = max(lag, (now - pending) * 1000.0)
-            lags.append({"loop": key, "thread": tname, "lagMs": round(lag, 3),
-                         "tasks": self._task_count(loop)})
-            rec[3] = 0.0
-        if lags:
-            m["loops"] = lags
-        if self._events:
-            m["events"], self._events = self._events, []
-        self.send(m)
+                current, peak = tracemalloc.get_traced_memory()
+                metrics["traced"] = current
+                metrics["tracedPeak"] = peak
+        loops: list[JsonObject] = []
+        for key, probe in list(self._loops.items()):
+            lag = probe.max_lag_ms
+            if probe.pending_since is not None:  # still waiting: the loop is blocked right now
+                lag = max(lag, (now - probe.pending_since) * 1000.0)
+            loops.append(
+                {
+                    "loop": key,
+                    "thread": probe.thread_name,
+                    "lagMs": round(lag, 3),
+                    "tasks": self._task_count(probe.loop),
+                }
+            )
+            probe.max_lag_ms = 0.0
+        if loops:
+            metrics["loops"] = loops
+        events: list[JsonObject] = []
+        while self._events:
+            events.append(self._events.popleft())
+        if events:
+            metrics["events"] = events
+        self._send(metrics)
 
     @staticmethod
-    def _task_count(loop):
-        try:
-            import asyncio
+    def _task_count(loop: asyncio.AbstractEventLoop) -> int | None:
+        import asyncio
 
+        try:
             return len(asyncio.all_tasks(loop))
-        except Exception:
+        except RuntimeError:  # task set changed while iterating
             return None
 
     # ------------------------------------------------------- event loop lag
-    def _probe_loops(self, now):
+    def _probe_loops(self, now: float) -> None:
         if "asyncio" not in sys.modules:
-            return
-        if now - self._last_loop_scan > 2.0:
+            return  # the program does not use asyncio (yet)
+        if now - self._last_loop_scan > self._LOOP_SCAN_INTERVAL:
             self._last_loop_scan = now
             self._scan_loops()
-        for key, rec in list(self._loops.items()):
-            loop = rec[0]
-            if loop.is_closed() or not loop.is_running():
+        for key, probe in list(self._loops.items()):
+            if probe.loop.is_closed() or not probe.loop.is_running():
                 self._loops.pop(key, None)
                 continue
-            if rec[2] is not None:
+            if probe.pending_since is not None:
                 continue  # previous probe not yet executed: loop is blocked
-            rec[2] = now
+            probe.pending_since = now
             try:
-                loop.call_soon_threadsafe(self._probe_done, key, now)
+                probe.loop.call_soon_threadsafe(self._probe_done, key, now)
             except RuntimeError:
                 self._loops.pop(key, None)
 
-    def _probe_done(self, key, sent):
-        rec = self._loops.get(key)
-        if rec is None:
+    def _probe_done(self, key: int, sent: float) -> None:
+        """Runs on the event loop: the time since ``sent`` is how long a callback had to wait."""
+        probe = self._loops.get(key)
+        if probe is None:
             return
-        lag = (time.perf_counter() - sent) * 1000.0
-        if lag > rec[3]:
-            rec[3] = lag
-        rec[2] = None
+        probe.max_lag_ms = max(probe.max_lag_ms, (time.perf_counter() - sent) * 1000.0)
+        probe.pending_since = None
 
-    def _scan_loops(self):
+    def _scan_loops(self) -> None:
         """Find running event loops by walking the frames of every thread."""
         import asyncio
 
         names = {t.ident: t.name for t in threading.enumerate()}
-        for ident, frame in sys._current_frames().items():
-            f = frame
-            while f is not None:
-                if f.f_code.co_name in ("run_forever", "_run_once"):
-                    loop = f.f_locals.get("self")
+        for ident, top_frame in sys._current_frames().items():
+            frame: FrameType | None = top_frame
+            while frame is not None:
+                if frame.f_code.co_name in ("run_forever", "_run_once"):
+                    loop = frame.f_locals.get("self")
                     if isinstance(loop, asyncio.AbstractEventLoop):
-                        key = id(loop)
-                        if key not in self._loops:
-                            self._loops[key] = [loop, names.get(ident, str(ident)), None, 0.0]
+                        if id(loop) not in self._loops:
+                            self._loops[id(loop)] = _LoopProbe(loop, names.get(ident, str(ident)))
                             if self._asyncio_debug:
                                 self._apply_debug(loop, True)
                         break
-                f = f.f_back
+                frame = frame.f_back
 
     # ---------------------------------------------------------- asyncio debug
-    def cmd_asyncio_debug(self, p):
-        self._slow_ms = float(p.get("slowMs", self._slow_ms))
-        self._set_asyncio_debug(bool(p.get("enabled", True)))
+    def _cmd_asyncio_debug(self, params: WireReader) -> JsonObject:
+        self._slow_callback_ms = params.get_float("slowMs", self._slow_callback_ms)
+        self._set_asyncio_debug(params.get_bool("enabled", True))
         return {"enabled": self._asyncio_debug, "loops": len(self._loops)}
 
-    def _set_asyncio_debug(self, enabled):
+    def _set_asyncio_debug(self, enabled: bool) -> None:
         if enabled == self._asyncio_debug:
             return
         self._asyncio_debug = enabled
         if "asyncio" in sys.modules:
             self._scan_loops()
-        for rec in list(self._loops.values()):
-            self._apply_debug(rec[0], enabled)
-        import warnings
-
+        for probe in list(self._loops.values()):
+            self._apply_debug(probe.loop, enabled)
         if enabled:
-            if self._log_handler is None:
-                self._log_handler = _AsyncioLogHandler(self)
-            self._log_handler.install()
-            self._orig_showwarning = warnings.showwarning
-            orig = self._orig_showwarning
-
-            def showwarning(message, category, filename, lineno, file=None, line=None):
-                try:
-                    if issubclass(category, RuntimeWarning) and "never awaited" in str(message):
-                        self._events.append({"t": time.perf_counter(), "kind": "never-awaited",
-                                             "message": str(message), "file": filename, "line": lineno})
-                except Exception:
-                    pass
-                return orig(message, category, filename, lineno, file, line)
-
-            warnings.showwarning = showwarning
+            self._debug_capture.install()
         else:
-            if self._log_handler is not None:
-                self._log_handler.remove()
-            if self._orig_showwarning is not None:
-                warnings.showwarning = self._orig_showwarning
-                self._orig_showwarning = None
+            self._debug_capture.remove()
 
-    def _apply_debug(self, loop, enabled):
-        def apply():
+    def _apply_debug(self, loop: asyncio.AbstractEventLoop, enabled: bool) -> None:
+        slow_callback_seconds = self._slow_callback_ms / 1000.0
+
+        def apply() -> None:
             loop.set_debug(enabled)
-            loop.slow_callback_duration = self._slow_ms / 1000.0
+            loop.slow_callback_duration = slow_callback_seconds
+
         try:
             loop.call_soon_threadsafe(apply)
         except RuntimeError:
-            pass
-
-    def on_asyncio_log(self, record):
-        msg = record.getMessage()
-        kind = "asyncio"
-        extra = {}
-        if msg.startswith("Executing") and "took" in msg:
-            kind = "slow-callback"
-            try:
-                extra["seconds"] = float(record.args[-1])
-                extra["handle"] = str(record.args[0])[:500]
-            except Exception:
-                pass
-        elif "was destroyed but it is pending" in msg:
-            kind = "task-destroyed-pending"
-        elif "exception was never retrieved" in msg:
-            kind = "exception-never-retrieved"
-        ev = {"t": time.perf_counter(), "kind": kind, "message": msg[:2000],
-              "thread": threading.current_thread().name}
-        ev.update(extra)
-        self._events.append(ev)
+            pass  # loop closed in the meantime
 
     # ------------------------------------------------------------ tracemalloc
-    def cmd_tracemalloc_start(self, p):
+    def _cmd_tracemalloc_start(self, params: WireReader) -> JsonObject:
         import tracemalloc
 
         if not tracemalloc.is_tracing():
-            tracemalloc.start(int(p.get("frames", 16)))
+            tracemalloc.start(params.get_int("frames", 16))
             self._started_tracemalloc = True
         return {"tracing": True, "frames": tracemalloc.get_traceback_limit()}
 
-    def cmd_tracemalloc_stop(self, p):
+    def _cmd_tracemalloc_stop(self, _params: WireReader) -> JsonObject:
         import tracemalloc
 
         tracemalloc.stop()
         self._started_tracemalloc = False
         return {"tracing": False}
 
-    def cmd_snapshot(self, p):
+    def _cmd_snapshot(self, params: WireReader) -> JsonObject:
         import tracemalloc
 
         if not tracemalloc.is_tracing():
             raise RuntimeError("tracemalloc is not running; start memory tracing first")
-        t = time.perf_counter()
         # A snapshot is stop-the-world anyway; hold the GIL longer so a busy
         # program does not stretch a 1s snapshot into 10s of contention.
-        old_switch = sys.getswitchinterval()
+        switch_interval = sys.getswitchinterval()
         sys.setswitchinterval(1.0)
         try:
-            return self._snapshot(p, t)
+            return self._snapshot(tracemalloc.take_snapshot, params.get_int("limit", 3000))
         finally:
-            sys.setswitchinterval(old_switch)
+            sys.setswitchinterval(switch_interval)
 
-    def _snapshot(self, p, t):
+    def _snapshot(self, take_snapshot: Callable[[], tracemalloc.Snapshot], limit: int) -> JsonObject:
         import tracemalloc
 
-        snap = tracemalloc.take_snapshot()
+        started = time.perf_counter()
         # Filter after grouping: Snapshot.filter_traces() runs fnmatch per trace
         # in Python and dominates snapshot time on large heaps.
-        agent_file = os.path.abspath(__file__)
-        if agent_file.endswith((".pyc", ".pyo")):
-            agent_file = agent_file[:-1]
-        tm_file = tracemalloc.__file__
-
-        def ours(tb):  # allocated by tracemalloc itself or anywhere inside this agent
-            if len(tb) and tb[-1].filename == tm_file:
-                return True
-            return any(fr.filename == agent_file for fr in tb)
-
-        stats = [s for s in snap.statistics("traceback") if not ours(s.traceback)]
-        limit = int(p.get("limit", 3000))
-        total_size = sum(s.size for s in stats)
-        total_count = sum(s.count for s in stats)
-        top = []
-        for s in stats[:limit]:
-            top.append([[[fr.filename, fr.lineno] for fr in s.traceback], s.size, s.count])
-        rest = stats[limit:]
-        cur, peak = tracemalloc.get_traced_memory()
+        statistics = [s for s in take_snapshot().statistics("traceback") if not self._is_own_allocation(s.traceback)]
+        top, rest = statistics[:limit], statistics[limit:]
+        current, peak = tracemalloc.get_traced_memory()
         return {
-            "t": t, "totalSize": total_size, "totalCount": total_count,
-            "otherSize": sum(s.size for s in rest), "otherCount": sum(s.count for s in rest),
-            "traced": cur, "peak": peak, "top": top,
-            "takeMs": round((time.perf_counter() - t) * 1000, 1),
+            "t": started,
+            "totalSize": sum(s.size for s in statistics),
+            "totalCount": sum(s.count for s in statistics),
+            "otherSize": sum(s.size for s in rest),
+            "otherCount": sum(s.count for s in rest),
+            "traced": current,
+            "peak": peak,
+            # frames oldest first, as tracemalloc reports them
+            "top": [[[[frame.filename, frame.lineno] for frame in s.traceback], s.size, s.count] for s in top],
+            "takeMs": round((time.perf_counter() - started) * 1000, 1),
         }
 
+    @staticmethod
+    def _is_own_allocation(traceback: tracemalloc.Traceback) -> bool:
+        """Allocated by tracemalloc itself or anywhere inside this agent."""
+        import tracemalloc
+
+        if len(traceback) and traceback[-1].filename == tracemalloc.__file__:
+            return True
+        return any(frame.filename == Agent._SOURCE_FILE for frame in traceback)
+
     # ---------------------------------------------------------- object counts
-    def cmd_object_counts(self, p):
+    def _cmd_object_counts(self, params: WireReader) -> JsonObject:
         import gc
         from collections import Counter
 
-        c = Counter()
-        for o in gc.get_objects():
-            tp = type(o)
-            c[tp.__module__ + "." + tp.__qualname__ if tp.__module__ != "builtins" else tp.__qualname__] += 1
-        return {"t": time.perf_counter(), "counts": c.most_common(int(p.get("limit", 60)))}
+        counts: Counter[str] = Counter()
+        for obj in gc.get_objects():
+            cls = type(obj)
+            counts[cls.__qualname__ if cls.__module__ == "builtins" else f"{cls.__module__}.{cls.__qualname__}"] += 1
+        return {"t": time.perf_counter(), "counts": counts.most_common(params.get_int("limit", 60))}
 
-    def cmd_ping(self, p):
+    def _cmd_ping(self, _params: WireReader) -> JsonObject:
         return {"t": time.perf_counter(), "pid": os.getpid()}
 
-    def cmd_shutdown(self, p):
+    def _cmd_shutdown(self, _params: WireReader) -> JsonObject:
         self._halt.set()
         return {"ok": True}
+
+
+class AgentRegistry:
+    """The one agent of this process."""
+
+    _lock = threading.Lock()
+    _agent: Agent | None = None
+
+    @classmethod
+    def start(cls, host: str, port: int, token: str, options: dict[str, object] | None) -> Agent:
+        with cls._lock:
+            if cls._agent is None or not cls._agent.is_alive():
+                cls._agent = Agent(host, port, token, WireReader(options or {}))
+                cls._agent.start()
+            return cls._agent
+
+
+def start(host: str, port: int, token: str, options: dict[str, object] | None = None) -> Agent:
+    """Idempotently start the agent. Entry point for the launcher and ``sys.remote_exec``."""
+    return AgentRegistry.start(host, port, token, options)

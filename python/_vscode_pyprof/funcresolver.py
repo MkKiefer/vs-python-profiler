@@ -6,63 +6,68 @@ graphs with the same function names as CPU stacks (CPython 3.15 reports
 enclosing ``def``/``class``.
 """
 
-from __future__ import annotations
-
 import ast
-import bisect
 import linecache
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class _Span:
+    start: int
+    end: int
+    qualname: str
 
 
 class FuncResolver:
-    def __init__(self):
-        self._cache: dict[str, tuple[list, list] | None] = {}
+    MODULE = "<module>"
+    UNKNOWN = "?"
+
+    def __init__(self) -> None:
+        self._spans_by_file: dict[str, list[_Span] | None] = {}
+        self._resolved: dict[tuple[str, int], str] = {}
 
     def resolve(self, filename: str, line: int) -> str:
-        idx = self._index(filename)
-        if not idx:
-            return "<module>" if line else "?"
-        starts, spans = idx
-        i = bisect.bisect_right(starts, line)
-        best = None
-        # spans sorted by start; walk back to find the innermost enclosing span
-        while i > 0:
-            i -= 1
-            start, end, name = spans[i]
-            if start <= line <= end:
-                if best is None or start >= best[0]:
-                    best = (start, name)
-                    break
-        return best[1] if best else "<module>"
+        key = (filename, line)
+        name = self._resolved.get(key)
+        if name is None:
+            name = self._resolved[key] = self._lookup(filename, line)
+        return name
 
-    def _index(self, filename):
-        if filename in self._cache:
-            return self._cache[filename]
-        result = None
+    def _lookup(self, filename: str, line: int) -> str:
+        spans = self._spans(filename)
+        if spans is None:
+            return self.MODULE if line else self.UNKNOWN
+        # spans are sorted outermost-first, so the last match is the innermost scope
+        innermost = self.MODULE
+        for span in spans:
+            if span.start > line:
+                break
+            if line <= span.end:
+                innermost = span.qualname
+        return innermost
+
+    def _spans(self, filename: str) -> list[_Span] | None:
+        if filename in self._spans_by_file:
+            return self._spans_by_file[filename]
+        spans: list[_Span] | None = None
         try:
-            src = "".join(linecache.getlines(filename))
-            if src:
-                tree = ast.parse(src, filename)
-                spans: list = []
-                _walk(tree, "", spans)
-                # innermost-first ordering: sort by start, then by narrower span
-                spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
-                result = ([s[0] for s in spans], spans)
-        except (SyntaxError, ValueError, RecursionError, OSError):
-            result = None
-        self._cache[filename] = result
-        return result
+            source = "".join(linecache.getlines(filename))
+            if source:
+                spans = []
+                self._collect(ast.parse(source, filename), "", spans)
+                spans.sort(key=lambda s: (s.start, -s.end))
+        except SyntaxError, ValueError, RecursionError, OSError:
+            spans = None
+        self._spans_by_file[filename] = spans
+        return spans
 
-
-def _walk(node, prefix, spans):
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            name = f"{prefix}{child.name}"
-            start = min([child.lineno] + [d.lineno for d in child.decorator_list])
-            end = getattr(child, "end_lineno", None) or child.lineno
-            spans.append((start, end, name))
-            if isinstance(child, ast.ClassDef):
-                _walk(child, name + ".", spans)
+    def _collect(self, node: ast.AST, prefix: str, spans: list[_Span]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qualname = f"{prefix}{child.name}"
+                start = min([child.lineno, *(d.lineno for d in child.decorator_list)])
+                spans.append(_Span(start, child.end_lineno or child.lineno, qualname))
+                inner = f"{qualname}." if isinstance(child, ast.ClassDef) else f"{qualname}.<locals>."
+                self._collect(child, inner, spans)
             else:
-                _walk(child, name + ".<locals>.", spans)
-        else:
-            _walk(child, prefix, spans)
+                self._collect(child, prefix, spans)

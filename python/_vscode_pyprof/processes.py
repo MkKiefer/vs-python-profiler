@@ -1,7 +1,8 @@
 """List running Python processes as JSON.
 
-Runs with *any* Python 3.8+ (it is used before we know which interpreter the
-target uses), so it must stay stdlib-only and avoid new syntax.
+Runs as a standalone script with *any* Python 3.10+ (it is used before we know
+which interpreter the target uses), so it must stay stdlib-only, must not import
+the rest of the package and must avoid newer syntax::
 
     python -I processes.py            -> JSON list on stdout
 """
@@ -9,168 +10,178 @@ target uses), so it must stay stdlib-only and avoid new syntax.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
-_PY_RE = re.compile(r"^python(\d(\.\d+)?t?)?(\.exe)?$|^pythonw(\.exe)?$", re.I)
-_VER_RE = re.compile(r"python(\d)\.(\d+)", re.I)
 
+class ProcessLister:
+    """Finds Python interpreters among the running processes of this machine."""
 
-def _is_python_name(path):
-    return bool(_PY_RE.match(os.path.basename(path or "")))
+    _PYTHON_NAME = re.compile(r"^python(\d(\.\d+)?t?)?(\.exe)?$|^pythonw(\.exe)?$", re.IGNORECASE)
+    _VERSION_IN_NAME = re.compile(r"python(\d)\.(\d+)", re.IGNORECASE)
+    _TITLE_LIMIT = 300
 
-
-def _venv_of(exe):
-    """Return the venv root if ``exe`` lives in one (pyvenv.cfg next to bin/Scripts)."""
-    if not exe:
-        return None
-    root = os.path.dirname(os.path.dirname(exe))
-    if os.path.isfile(os.path.join(root, "pyvenv.cfg")):
-        return root
-    return None
-
-
-def _version_guess(exe, real):
-    for p in (real, exe):
-        m = _VER_RE.search(os.path.basename(p or ""))
-        if m:
-            return "%s.%s" % (m.group(1), m.group(2))
-    root = _venv_of(exe)
-    if root:
+    def list_processes(self) -> list[dict[str, object]]:
+        """One record per Python process; empty if the platform cannot be inspected."""
         try:
-            with open(os.path.join(root, "pyvenv.cfg")) as f:
+            if sys.platform.startswith("linux"):
+                return self._list_linux()
+            if sys.platform == "darwin":
+                return self._list_macos()
+            if sys.platform == "win32":
+                return self._list_windows()
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            sys.stderr.write(f"process listing failed: {error!r}\n")
+        return []
+
+    @classmethod
+    def is_python_name(cls, path: str | None) -> bool:
+        return bool(cls._PYTHON_NAME.match(os.path.basename(path or "")))
+
+    @staticmethod
+    def venv_of(executable: str | None) -> str | None:
+        """The venv root if ``executable`` lives in one (pyvenv.cfg next to bin/Scripts)."""
+        if not executable:
+            return None
+        root = os.path.dirname(os.path.dirname(executable))
+        return root if os.path.isfile(os.path.join(root, "pyvenv.cfg")) else None
+
+    @classmethod
+    def guess_version(cls, executable: str | None, real_executable: str | None) -> str | None:
+        """``major.minor`` from the executable name or the venv's pyvenv.cfg, without running it."""
+        for path in (real_executable, executable):
+            match = cls._VERSION_IN_NAME.search(os.path.basename(path or ""))
+            if match:
+                return f"{match.group(1)}.{match.group(2)}"
+        root = cls.venv_of(executable)
+        if root is None:
+            return None
+        try:
+            with open(os.path.join(root, "pyvenv.cfg"), encoding="utf-8") as f:
                 for line in f:
-                    k, _, v = line.partition("=")
-                    if k.strip() in ("version", "version_info"):
-                        return ".".join(v.strip().split(".")[:2])
+                    key, _, value = line.partition("=")
+                    if key.strip() in ("version", "version_info"):
+                        return ".".join(value.strip().split(".")[:2])
         except OSError:
             pass
-    return None
+        return None
 
+    # ------------------------------------------------------------- platforms
+    def _list_linux(self) -> list[dict[str, object]]:
+        own_pid = os.getpid()
+        records = []
+        for name in os.listdir("/proc"):
+            if not name.isdigit() or int(name) == own_pid:
+                continue
+            pid = int(name)
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    argv = [arg.decode("utf-8", "replace") for arg in f.read().split(b"\0") if arg]
+            except OSError:
+                continue
+            executable = self._read_link(f"/proc/{pid}/exe") or ""
+            if not argv or not (self.is_python_name(executable) or self.is_python_name(argv[0])):
+                continue
+            try:
+                with open(f"/proc/{pid}/stat", "rb") as f:
+                    stat = f.read()
+                parent_pid = int(stat[stat.rindex(b")") + 2 :].split()[1])
+            except (OSError, ValueError, IndexError):
+                parent_pid = 0
+            launched = argv[0] if os.path.isabs(argv[0]) else executable
+            records.append(
+                self._record(
+                    pid, parent_pid, launched or executable, executable, argv, self._read_link(f"/proc/{pid}/cwd")
+                )
+            )
+        return records
 
-def _linux():
-    me = os.getpid()
-    out = []
-    for name in os.listdir("/proc"):
-        if not name.isdigit():
-            continue
-        pid = int(name)
-        if pid == me:
-            continue
+    def _list_macos(self) -> list[dict[str, object]]:
+        result = subprocess.run(
+            ["ps", "-axww", "-o", "pid=,ppid=,comm=,args="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        own_pid = os.getpid()
+        records = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 3)
+            if len(parts) < 3:
+                continue
+            pid, parent_pid, command = int(parts[0]), int(parts[1]), parts[2]
+            if pid == own_pid or not self.is_python_name(command):
+                continue
+            argv = (parts[3] if len(parts) > 3 else command).split()
+            real = os.path.realpath(command) if os.path.isabs(command) else command
+            records.append(self._record(pid, parent_pid, command, real, argv, None))
+        return records
+
+    def _list_windows(self) -> list[dict[str, object]]:
+        query = (
+            "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
+            "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", query],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        rows = json.loads(result.stdout or "[]")
+        if isinstance(rows, dict):
+            rows = [rows]
+        own_pid = os.getpid()
+        parent_pids = {row.get("ParentProcessId") for row in rows}
+        records = []
+        for row in rows:
+            pid = row.get("ProcessId")
+            parent_pid = row.get("ParentProcessId") or 0
+            if pid == own_pid or parent_pid == own_pid:
+                continue
+            executable = row.get("ExecutablePath") or ""
+            argv = self._split_windows_command_line(row.get("CommandLine") or executable)
+            record = self._record(pid, parent_pid, executable, executable, argv, None)
+            # venv launchers on Windows spawn the real interpreter as a child
+            record["isLauncher"] = pid in parent_pids and self.venv_of(executable) is not None
+            records.append(record)
+        return records
+
+    # --------------------------------------------------------------- helpers
+    def _record(
+        self, pid: int, parent_pid: int, executable: str, real_executable: str, argv: list[str], cwd: str | None
+    ) -> dict[str, object]:
+        title = " ".join(os.path.basename(arg) if i == 0 else arg for i, arg in enumerate(argv))
+        return {
+            "pid": pid,
+            "ppid": parent_pid,
+            "executable": executable,
+            "realExecutable": real_executable,
+            "version": self.guess_version(executable, real_executable),
+            "venv": self.venv_of(executable),
+            "argv": argv,
+            "title": title[: self._TITLE_LIMIT],
+            "cwd": cwd,
+        }
+
+    @staticmethod
+    def _read_link(path: str) -> str | None:
         try:
-            exe = os.readlink("/proc/%d/exe" % pid)
+            return os.readlink(path)
         except OSError:
-            exe = ""
+            return None
+
+    @staticmethod
+    def _split_windows_command_line(command_line: str) -> list[str]:
         try:
-            with open("/proc/%d/cmdline" % pid, "rb") as f:
-                argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
-        except OSError:
-            continue
-        if not argv:
-            continue
-        if not (_is_python_name(exe) or _is_python_name(argv[0])):
-            continue
-        try:
-            with open("/proc/%d/stat" % pid, "rb") as f:
-                data = f.read()
-            ppid = int(data[data.rindex(b")") + 2:].split()[1])
-        except (OSError, ValueError):
-            ppid = 0
-        launched = argv[0] if os.path.isabs(argv[0]) else exe
-        try:
-            cwd = os.readlink("/proc/%d/cwd" % pid)
-        except OSError:
-            cwd = None
-        out.append(_rec(pid, ppid, launched or exe, exe, argv, cwd))
-    return out
-
-
-def _darwin():
-    res = subprocess.run(
-        ["ps", "-axww", "-o", "pid=,ppid=,comm=,args="],
-        capture_output=True, text=True, timeout=5,
-    )
-    out = []
-    me = os.getpid()
-    for line in res.stdout.splitlines():
-        parts = line.strip().split(None, 3)
-        if len(parts) < 3:
-            continue
-        pid, ppid, comm = int(parts[0]), int(parts[1]), parts[2]
-        args = parts[3] if len(parts) > 3 else comm
-        if pid == me or not _is_python_name(comm):
-            continue
-        argv = args.split()
-        out.append(_rec(pid, ppid, comm, os.path.realpath(comm) if os.path.isabs(comm) else comm, argv, None))
-    return out
-
-
-def _windows():
-    ps = (
-        "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
-        "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
-    )
-    res = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-        capture_output=True, text=True, timeout=15,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    data = json.loads(res.stdout or "[]")
-    if isinstance(data, dict):
-        data = [data]
-    me = os.getpid()
-    out = []
-    pids = {d.get("ProcessId") for d in data}
-    for d in data:
-        pid = d.get("ProcessId")
-        if pid == me or d.get("ParentProcessId") == me:
-            continue
-        exe = d.get("ExecutablePath") or ""
-        cmd = d.get("CommandLine") or exe
-        rec = _rec(pid, d.get("ParentProcessId") or 0, exe, exe, _split_win(cmd), None)
-        # venv launchers on Windows spawn the real interpreter as a child
-        rec["isLauncher"] = any(o.get("ParentProcessId") == pid for o in data) and _venv_of(exe) is not None
-        rec["hasPythonParent"] = rec["ppid"] in pids
-        out.append(rec)
-    return out
-
-
-def _split_win(cmd):
-    try:
-        import shlex
-
-        return shlex.split(cmd, posix=False)
-    except ValueError:
-        return cmd.split()
-
-
-def _rec(pid, ppid, exe, real, argv, cwd):
-    title = " ".join(os.path.basename(a) if i == 0 else a for i, a in enumerate(argv))
-    return {
-        "pid": pid,
-        "ppid": ppid,
-        "executable": exe,
-        "realExecutable": real,
-        "version": _version_guess(exe, real),
-        "venv": _venv_of(exe),
-        "argv": argv,
-        "title": title[:300],
-        "cwd": cwd,
-    }
-
-
-def list_processes():
-    try:
-        if sys.platform.startswith("linux"):
-            return _linux()
-        if sys.platform == "darwin":
-            return _darwin()
-        if sys.platform == "win32":
-            return _windows()
-    except Exception as e:  # pragma: no cover - diagnostics only
-        sys.stderr.write("process listing failed: %r\n" % (e,))
-    return []
+            return shlex.split(command_line, posix=False)
+        except ValueError:
+            return command_line.split()
 
 
 if __name__ == "__main__":
-    json.dump(list_processes(), sys.stdout)
+    json.dump(ProcessLister().list_processes(), sys.stdout)

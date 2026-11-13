@@ -7,3 +7,8 @@ __pycache__/
 .pytest_cache/
 *.pyprof
 !test/fixtures/*.pyprof
+.venv/
+.pdm-python
+.pdm-build/
+.mypy_cache/
+.ruff_cache/

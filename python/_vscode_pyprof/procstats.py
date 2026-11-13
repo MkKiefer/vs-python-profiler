@@ -1,106 +1,149 @@
 """Cross-platform RSS and CPU-time readers for another process (stdlib only)."""
 
-from __future__ import annotations
-
+import ctypes
 import os
 import subprocess
 import sys
+from abc import ABC, abstractmethod
+from ctypes import wintypes
+from dataclasses import dataclass
 
 
-class ProcStats:
-    """Return ``(rss_bytes, cpu_seconds)`` for ``pid`` or ``None`` if gone."""
+@dataclass(frozen=True, slots=True)
+class ProcessStats:
+    rss_bytes: int
+    cpu_seconds: float
 
-    def __init__(self, pid: int):
-        self.pid = pid
-        self._impl = {
-            "linux": self._linux,
-            "win32": self._windows,
-            "darwin": self._ps,
-        }.get(sys.platform, self._ps)
-        self._handle = None
+
+class ProcessStatsReader(ABC):
+    """Reads memory and CPU usage of one process."""
+
+    def __init__(self, pid: int) -> None:
+        self._pid = pid
+
+    @classmethod
+    def for_pid(cls, pid: int) -> ProcessStatsReader:
+        """The reader matching the current operating system."""
         if sys.platform == "linux":
-            self._page = os.sysconf("SC_PAGE_SIZE")
-            self._tck = os.sysconf("SC_CLK_TCK")
+            return LinuxProcessStatsReader(pid)
+        if sys.platform == "win32":
+            return WindowsProcessStatsReader(pid)
+        return PsProcessStatsReader(pid)
 
-    def read(self):
+    def read(self) -> ProcessStats | None:
+        """Current stats, or ``None`` if the process is gone or cannot be read."""
         try:
-            return self._impl()
-        except (OSError, ValueError, IndexError):
+            return self._read()
+        except OSError, ValueError, IndexError, subprocess.SubprocessError:
             return None
 
-    def close(self):
-        if self._handle:
-            import ctypes
+    def close(self) -> None:  # noqa: B027 - optional hook, most readers hold no resources
+        """Release OS resources held by the reader."""
 
-            ctypes.windll.kernel32.CloseHandle(self._handle)
-            self._handle = None
+    @abstractmethod
+    def _read(self) -> ProcessStats | None: ...
 
-    # -- linux: /proc is cheap and always readable for same-user processes
-    def _linux(self):
-        with open(f"/proc/{self.pid}/statm", "rb") as f:
+
+class LinuxProcessStatsReader(ProcessStatsReader):
+    """``/proc`` is cheap and always readable for same-user processes."""
+
+    def __init__(self, pid: int) -> None:
+        super().__init__(pid)
+        self._page_size = os.sysconf("SC_PAGE_SIZE")
+        self._ticks_per_second = os.sysconf("SC_CLK_TCK")
+
+    def _read(self) -> ProcessStats | None:
+        with open(f"/proc/{self._pid}/statm", "rb") as f:
             rss_pages = int(f.read().split()[1])
-        with open(f"/proc/{self.pid}/stat", "rb") as f:
+        with open(f"/proc/{self._pid}/stat", "rb") as f:
             data = f.read()
-        fields = data[data.rindex(b")") + 2:].split()
-        cpu = (int(fields[11]) + int(fields[12])) / self._tck
-        return rss_pages * self._page, cpu
+        # the command name (field 2) may contain spaces and parentheses: split after the last ')'
+        fields = data[data.rindex(b")") + 2 :].split()
+        cpu_ticks = int(fields[11]) + int(fields[12])  # utime + stime
+        return ProcessStats(rss_pages * self._page_size, cpu_ticks / self._ticks_per_second)
 
-    # -- macOS (and fallback): `ps` works without entitlements
-    def _ps(self):
+
+class PsProcessStatsReader(ProcessStatsReader):
+    """macOS and other POSIX systems: ``ps`` works without entitlements."""
+
+    def _read(self) -> ProcessStats | None:
         out = subprocess.run(
-            ["ps", "-o", "rss=,time=", "-p", str(self.pid)],
-            capture_output=True, text=True, timeout=2,
+            ["ps", "-o", "rss=,time=", "-p", str(self._pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
         ).stdout.split()
         if len(out) < 2:
             return None
-        rss = int(out[0]) * 1024
-        return rss, _parse_ps_time(out[1])
+        return ProcessStats(int(out[0]) * 1024, self.parse_cpu_time(out[1]))
 
-    # -- windows: psapi via ctypes
-    def _windows(self):
-        import ctypes
-        from ctypes import wintypes
+    @staticmethod
+    def parse_cpu_time(text: str) -> float:
+        """Parse ``ps`` cumulative CPU time, ``[[dd-]hh:]mm:ss[.ss]``, into seconds."""
+        days = 0
+        if "-" in text:
+            day_part, text = text.split("-", 1)
+            days = int(day_part)
+        seconds = 0.0
+        for part in text.split(":"):
+            seconds = seconds * 60 + float(part)
+        return days * 86400 + seconds
 
-        k32 = ctypes.windll.kernel32
+
+class _ProcessMemoryCounters(ctypes.Structure):
+    _fields_ = (
+        ("cb", wintypes.DWORD),
+        ("PageFaultCount", wintypes.DWORD),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    )
+
+
+class WindowsProcessStatsReader(ProcessStatsReader):
+    """Windows: psapi through ctypes, with one process handle kept open."""
+
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _STILL_ACTIVE = 259
+
+    def __init__(self, pid: int) -> None:
+        super().__init__(pid)
+        self._handle: int | None = None
+
+    def close(self) -> None:
+        if sys.platform != "win32":
+            return
+        if self._handle:
+            ctypes.windll.kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+    def _read(self) -> ProcessStats | None:
+        if sys.platform != "win32":
+            return None
+        kernel32 = ctypes.windll.kernel32
         if not self._handle:
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            self._handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, self.pid)
+            self._handle = kernel32.OpenProcess(self._PROCESS_QUERY_LIMITED_INFORMATION, False, self._pid)
             if not self._handle:
                 return None
-
-        class PMC(ctypes.Structure):
-            _fields_ = [
-                ("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
-                ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-
-        pmc = PMC()
-        pmc.cb = ctypes.sizeof(PMC)
-        if not k32.K32GetProcessMemoryInfo(self._handle, ctypes.byref(pmc), pmc.cb):
+        counters = _ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
+        if not kernel32.K32GetProcessMemoryInfo(self._handle, ctypes.byref(counters), counters.cb):
             return None
-        code = wintypes.DWORD()
-        if k32.GetExitCodeProcess(self._handle, ctypes.byref(code)) and code.value != 259:
-            return None  # STILL_ACTIVE == 259
-        ft = [wintypes.FILETIME() for _ in range(4)]
-        k32.GetProcessTimes(self._handle, *[ctypes.byref(x) for x in ft])
+        exit_code = wintypes.DWORD()
+        if kernel32.GetExitCodeProcess(self._handle, ctypes.byref(exit_code)) and exit_code.value != self._STILL_ACTIVE:
+            return None
+        # creation, exit, kernel, user
+        times = [wintypes.FILETIME() for _ in range(4)]
+        kernel32.GetProcessTimes(self._handle, *[ctypes.byref(t) for t in times])
+        cpu = self._filetime_seconds(times[2]) + self._filetime_seconds(times[3])
+        return ProcessStats(int(counters.WorkingSetSize), cpu)
 
-        def secs(f):
-            return ((f.dwHighDateTime << 32) | f.dwLowDateTime) / 1e7
-
-        return pmc.WorkingSetSize, secs(ft[2]) + secs(ft[3])
-
-
-def _parse_ps_time(s: str) -> float:
-    # [[dd-]hh:]mm:ss.ss
-    days = 0
-    if "-" in s:
-        d, s = s.split("-", 1)
-        days = int(d)
-    parts = [float(p) for p in s.split(":")]
-    secs = 0.0
-    for p in parts:
-        secs = secs * 60 + p
-    return days * 86400 + secs
+    @staticmethod
+    def _filetime_seconds(filetime: wintypes.FILETIME) -> float:
+        return ((filetime.dwHighDateTime << 32) | filetime.dwLowDateTime) / 1e7
