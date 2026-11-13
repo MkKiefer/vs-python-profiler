@@ -12,6 +12,8 @@ const builds = tests
       ...common,
       entryPoints: readdirSync('test').filter((f) => f.endsWith('.test.ts')).map((f) => `test/${f}`),
       outdir: 'dist-test', platform: 'node', format: 'cjs', target: 'node20', outExtension: { '.js': '.cjs' },
+      // tests run outside VS Code: the extension gets a stub of its API
+      alias: { vscode: './test/support/vscodeStub.ts' },
     }]
   : [
       {

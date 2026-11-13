@@ -14,15 +14,25 @@
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { EnvironmentResolver } from './environment';
 import { parseDotEnv } from './dotenv';
-import { pytestNodeId, splitArgs } from './launch.pure';
-import type { SessionManager, LaunchSpec } from './session';
+import type { EnvironmentResolver } from './environment';
+import { parseLaunchConfig, pytestNodeId, type LaunchConfig } from './launchConfig';
 import type { ProcessPicker } from './processes';
-import type { CollectorOptions } from '../shared/protocol';
+import type { SessionManager } from './sessionManager';
+import { settings } from './settings';
+import { errorMessage } from '../shared/errors';
 
 export const DEBUG_TYPE = 'python-profiler';
-const PYTHON_DEBUG_TYPES = new Set(['debugpy', 'python']);
+const PYTHON_DEBUG_TYPES: ReadonlySet<string> = new Set(['debugpy', 'python', DEBUG_TYPE]);
+
+const CURRENT_FILE_CONFIG: vscode.DebugConfiguration = {
+  name: 'Profile: Current File',
+  type: DEBUG_TYPE,
+  request: 'launch',
+  program: '${file}',
+};
+
+type ConfigItem = vscode.QuickPickItem & { folder: vscode.WorkspaceFolder; config: vscode.DebugConfiguration };
 
 export class LaunchAdapter implements vscode.DebugConfigurationProvider {
   constructor(
@@ -36,29 +46,23 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
       vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, this),
       vscode.debug.registerDebugConfigurationProvider(
         DEBUG_TYPE,
-        {
-          provideDebugConfigurations: () => [
-            { name: 'Profile: Current File', type: DEBUG_TYPE, request: 'launch', program: '${file}' },
-          ],
-        },
+        { provideDebugConfigurations: () => [CURRENT_FILE_CONFIG] },
         vscode.DebugConfigurationProviderTriggerKind.Dynamic,
       ),
     );
   }
 
   provideDebugConfigurations(): vscode.DebugConfiguration[] {
-    return [{ name: 'Profile: Current File', type: DEBUG_TYPE, request: 'launch', program: '${file}' }];
+    return [CURRENT_FILE_CONFIG];
   }
 
   resolveDebugConfiguration(
     _folder: vscode.WorkspaceFolder | undefined,
     config: vscode.DebugConfiguration,
   ): vscode.DebugConfiguration | undefined {
-    // F5 with no launch.json
+    // F5 with no launch.json: VS Code passes an empty configuration
     if (!config.type && !config.request && !config.name) {
-      const editor = vscode.window.activeTextEditor;
-      if (editor?.document.languageId !== 'python') return undefined;
-      return { name: 'Profile: Current File', type: DEBUG_TYPE, request: 'launch', program: '${file}' };
+      return vscode.window.activeTextEditor?.document.languageId === 'python' ? CURRENT_FILE_CONFIG : undefined;
     }
     return config;
   }
@@ -68,60 +72,58 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     config: vscode.DebugConfiguration,
   ): Promise<undefined> {
     try {
-      if (config.request === 'attach') await this.attachFromConfig(config);
-      else await this.launchFromConfig(folder, config);
+      const parsed = parseLaunchConfig(config);
+      if (parsed.request === 'attach') await this.attachFromConfig(parsed);
+      else await this.launchFromConfig(folder, parsed);
     } catch (e) {
-      vscode.window.showErrorMessage(`Python Profiler: ${(e as Error).message ?? e}`);
+      void vscode.window.showErrorMessage(`Python Profiler: ${errorMessage(e)}`);
     }
     return undefined; // never start a debug adapter
   }
 
-  private async attachFromConfig(config: vscode.DebugConfiguration): Promise<void> {
-    const pid = Number(config.processId ?? config.pid);
-    if (!pid) {
-      await this.picker.pickAndAttach();
-      return;
-    }
-    await this.picker.attachPid(pid, profileOptions(config.profile));
+  private async attachFromConfig(config: LaunchConfig): Promise<void> {
+    if (config.processId) await this.picker.attachPid(config.processId, config.profile);
+    else await this.picker.pickAndAttach();
   }
 
-  private async launchFromConfig(folder: vscode.WorkspaceFolder | undefined, config: vscode.DebugConfiguration): Promise<void> {
+  private async launchFromConfig(folder: vscode.WorkspaceFolder | undefined, config: LaunchConfig): Promise<void> {
+    const target = config.module ?? config.program;
+    if (!target) throw new Error('launch configuration needs "program" or "module"');
     const resource = config.program ? vscode.Uri.file(config.program) : folder?.uri;
-    const python = await this.env.ensureSupported(resource, config.python || config.pythonPath || undefined);
+    const python = await this.env.ensureSupported(resource, config.python);
     if (!python) return;
-    if (!config.program && !config.module) throw new Error('launch configuration needs "program" or "module"');
-    const cwd = config.cwd || folder?.uri.fsPath || (config.program ? path.dirname(config.program) : undefined);
-
-    const base = await this.env.environmentVariables(resource);
-    let env: Record<string, string> = { ...base };
-    if (config.envFile && fs.existsSync(config.envFile)) {
-      env = { ...env, ...parseDotEnv(fs.readFileSync(config.envFile, 'utf8'), { ...process.env, ...env }) };
-    }
-    if (config.env) for (const [k, v] of Object.entries(config.env)) if (v !== null) env[k] = String(v);
-
-    const args = Array.isArray(config.args) ? config.args.map(String) : config.args ? splitArgs(String(config.args)) : [];
-    const spec: LaunchSpec = {
+    const { inject: _attachOnly, ...profile } = config.profile;
+    await this.sessions.launch({
       python,
       kind: config.module ? 'module' : 'path',
-      target: config.module || config.program,
-      args,
-      cwd,
-      env,
-      label: config.__label || (config.module ? `-m ${config.module}` : path.basename(config.program)),
-      options: this.sessions.defaultOptions(resource, profileOptions(config.profile)),
-    };
-    await this.sessions.launch(spec);
+      target,
+      args: config.args,
+      cwd: config.cwd ?? folder?.uri.fsPath ?? (config.program ? path.dirname(config.program) : undefined),
+      env: await this.environment(resource, config),
+      label: config.label ?? (config.module ? `-m ${config.module}` : path.basename(target)),
+      options: settings.collectorOptions(resource, profile),
+    });
+  }
+
+  /** Python extension variables (.env included) < the config's envFile < the config's env. */
+  private async environment(resource: vscode.Uri | undefined, config: LaunchConfig): Promise<Record<string, string>> {
+    let env = await this.env.environmentVariables(resource);
+    if (config.envFile && fs.existsSync(config.envFile)) {
+      const content = await fs.promises.readFile(config.envFile, 'utf8');
+      env = { ...env, ...parseDotEnv(content, { ...process.env, ...env }) };
+    }
+    return { ...env, ...config.env };
   }
 
   // ------------------------------------------------------------- commands
   async profileFile(uri?: vscode.Uri): Promise<void> {
     const target = uri ?? vscode.window.activeTextEditor?.document.uri;
-    if (!target || !target.fsPath.endsWith('.py')) {
-      vscode.window.showWarningMessage('Open a Python file to profile.');
+    if (!target?.fsPath.endsWith('.py')) {
+      void vscode.window.showWarningMessage('Open a Python file to profile.');
       return;
     }
-    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === target.toString());
-    if (doc?.isDirty) await doc.save();
+    const document = vscode.workspace.textDocuments.find((d) => d.uri.toString() === target.toString());
+    if (document?.isDirty) await document.save();
     const folder = vscode.workspace.getWorkspaceFolder(target);
     await vscode.debug.startDebugging(folder, {
       name: `Profile: ${path.basename(target.fsPath)}`,
@@ -132,24 +134,9 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     });
   }
 
+  /** Pick one of the user's existing launch.json configurations and run it under the profiler. */
   async profileConfiguration(): Promise<void> {
-    type Item = vscode.QuickPickItem & { folder?: vscode.WorkspaceFolder; config: vscode.DebugConfiguration };
-    const items: Item[] = [];
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    for (const folder of folders) {
-      const configs = vscode.workspace.getConfiguration('launch', folder).get<vscode.DebugConfiguration[]>('configurations') ?? [];
-      for (const config of configs) {
-        if (!PYTHON_DEBUG_TYPES.has(config.type) && config.type !== DEBUG_TYPE) continue;
-        const what = config.module ? `-m ${config.module}` : config.program ?? (config.request === 'attach' ? 'attach' : '');
-        items.push({
-          label: `$(debug-alt) ${config.name}`,
-          description: `${config.type} · ${what} ${Array.isArray(config.args) ? config.args.join(' ') : config.args ?? ''}`,
-          detail: folders.length > 1 ? folder.name : undefined,
-          folder,
-          config,
-        });
-      }
-    }
+    const items = this.launchConfigurationItems();
     if (!items.length) {
       const pick = await vscode.window.showInformationMessage(
         'No Python launch configurations found in launch.json.',
@@ -167,8 +154,9 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     });
     if (!pick) return;
     const { config, folder } = pick;
-    if (config.request === 'attach' && !config.processId) {
-      vscode.window.showWarningMessage(
+    const parsed = parseLaunchConfig(config);
+    if (parsed.request === 'attach' && !parsed.processId) {
+      void vscode.window.showWarningMessage(
         `"${config.name}" attaches via debugpy (host/port); use "Attach Profiler to Process…" to pick the process instead.`,
       );
       return;
@@ -181,33 +169,45 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     });
   }
 
+  private launchConfigurationItems(): ConfigItem[] {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const items: ConfigItem[] = [];
+    for (const folder of folders) {
+      const configs =
+        vscode.workspace.getConfiguration('launch', folder).get<vscode.DebugConfiguration[]>('configurations') ?? [];
+      for (const config of configs) {
+        if (!PYTHON_DEBUG_TYPES.has(config.type)) continue;
+        const parsed = parseLaunchConfig(config);
+        const what = parsed.module ? `-m ${parsed.module}` : (parsed.program ?? parsed.request);
+        items.push({
+          label: `$(debug-alt) ${config.name}`,
+          description: [config.type, [what, ...parsed.args].join(' ')].join(' · '),
+          detail: folders.length > 1 ? folder.name : undefined,
+          folder,
+          config,
+        });
+      }
+    }
+    return items;
+  }
+
   async profileTest(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'python') return;
-    const nodeId = pytestNodeId(editor.document, editor.selection.active.line);
-    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-    const rel = folder ? path.relative(folder.uri.fsPath, editor.document.uri.fsPath) : editor.document.uri.fsPath;
-    const id = nodeId ? `${rel}::${nodeId}` : rel;
-    if (editor.document.isDirty) await editor.document.save();
+    if (editor?.document.languageId !== 'python') return;
+    const document = editor.document;
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const file = folder ? path.relative(folder.uri.fsPath, document.uri.fsPath) : document.uri.fsPath;
+    const test = pytestNodeId(document, editor.selection.active.line);
+    const nodeId = (test ? `${file}::${test}` : file).split(path.sep).join('/');
+    if (document.isDirty) await document.save();
     await vscode.debug.startDebugging(folder, {
-      name: `Profile: ${id}`,
+      name: `Profile: ${nodeId}`,
       type: DEBUG_TYPE,
       request: 'launch',
       module: 'pytest',
-      args: [id.split(path.sep).join('/'), '-q', '-p', 'no:cacheprovider'],
+      args: [nodeId, '-q', '-p', 'no:cacheprovider'],
       cwd: folder?.uri.fsPath,
-      __label: `pytest ${nodeId ?? rel}`,
+      __label: `pytest ${test ?? file}`,
     });
   }
-}
-
-function profileOptions(p: any): CollectorOptions & { inject?: boolean } {
-  if (!p) return {};
-  return {
-    rateHz: p.rateHz,
-    tracemalloc: p.memory,
-    asyncioDebug: p.asyncioDebug,
-    native: p.native,
-    inject: p.inject,
-  };
 }

@@ -12,7 +12,7 @@ import type { ToWebview } from '../shared/protocol';
 document.head.appendChild(h('style', null, css));
 
 const app = new App();
-const root = document.getElementById('app')!;
+const root = document.getElementById('app') ?? document.body;
 const header = h('div', { class: 'header' });
 const tabsBar = h('div', { class: 'tabs', role: 'tablist' });
 const host = h('div', { style: 'flex:1;display:flex;flex-direction:column;min-height:0' });
@@ -28,7 +28,7 @@ const TAB_LABELS: [TabId, string][] = [
 ];
 
 function renderHeader(): void {
-  const live = app.caps.live;
+  const { live } = app.caps;
   const pill = h('span', { class: `pill ${app.state}` }, app.state === 'file' ? 'saved profile' : app.state);
   const meta = [
     app.model.meta.pid ? `PID ${app.model.meta.pid}` : '',
@@ -71,7 +71,7 @@ function renderTabs(): void {
           },
         },
         label,
-        badges[id] ? h('span', { class: 'badge' }, badges[id]!) : null,
+        badges[id] ? h('span', { class: 'badge' }, badges[id]) : null,
       ),
     ),
   );
@@ -111,13 +111,12 @@ function scheduleLive(): void {
 
 app.onChange((full) => render(full));
 
-window.addEventListener('message', (ev: MessageEvent<ToWebview | { type: 'reveal'; fn: number }>) => {
+window.addEventListener('message', (ev: MessageEvent<ToWebview>) => {
   const msg = ev.data;
   switch (msg.type) {
     case 'init':
       app.model.applyDelta(msg.data);
       app.label = msg.label;
-      app.live = msg.live;
       app.state = msg.state;
       app.caps = msg.capabilities;
       if (!initialized) {
@@ -140,23 +139,19 @@ window.addEventListener('message', (ev: MessageEvent<ToWebview | { type: 'reveal
     case 'state':
       app.state = msg.state;
       app.caps = msg.capabilities;
-      app.live = msg.capabilities.live;
       render(true);
       break;
     case 'reveal':
       tabs?.cpu.reveal?.(msg.fn);
       break;
     case 'error':
-      showToast(msg.message, true);
-      break;
-    case 'info':
-      showToast(msg.message, false);
+      showToast(msg.message);
       break;
   }
 });
 
-function showToast(text: string, error: boolean): void {
-  const t = h('div', { class: `banner ${error ? 'warn' : ''}`, style: 'position:fixed;bottom:12px;right:12px;z-index:50;max-width:480px' }, text);
+function showToast(text: string): void {
+  const t = h('div', { class: 'banner warn', style: 'position:fixed;bottom:12px;right:12px;z-index:50;max-width:480px' }, text);
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 6000);
 }

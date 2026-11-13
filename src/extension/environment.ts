@@ -10,6 +10,8 @@ import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PythonExtension } from '@vscode/python-extension';
+import { settings } from './settings';
+import { errorMessage } from '../shared/errors';
 
 export const MIN_MAJOR = 3;
 export const MIN_MINOR = 15;
@@ -24,6 +26,24 @@ export interface PythonInfo {
   label: string;
   envPath?: string;
 }
+
+/** What the probe script prints (see `PROBE_SCRIPT`). */
+interface ProbeResult {
+  version: string;
+  major: number;
+  minor: number;
+  freeThreaded: boolean;
+  executable: string;
+  prefix: string;
+  inVenv: boolean;
+}
+
+const PROBE_SCRIPT =
+  'import sys,json,sysconfig;print(json.dumps({"version":sys.version.split()[0],"major":sys.version_info[0],' +
+  '"minor":sys.version_info[1],"freeThreaded":bool(sysconfig.get_config_var("Py_GIL_DISABLED")),' +
+  '"executable":sys.executable,"prefix":sys.prefix,"inVenv":sys.prefix!=sys.base_prefix}))';
+const PROBE_TIMEOUT_MS = 15_000;
+const MIN_VERSION = `${MIN_MAJOR}.${MIN_MINOR}`;
 
 export class EnvironmentResolver implements vscode.Disposable {
   private api: PythonExtension | undefined;
@@ -44,7 +64,7 @@ export class EnvironmentResolver implements vscode.Disposable {
         this.api.environments.onDidChangeActiveEnvironmentPath(() => this.changed.fire()),
       );
     } catch (e) {
-      this.log.warn(`Python extension API unavailable, falling back to settings/PATH: ${e}`);
+      this.log.warn(`Python extension API unavailable, falling back to settings/PATH: ${errorMessage(e)}`);
     }
     return this.api;
   }
@@ -60,10 +80,10 @@ export class EnvironmentResolver implements vscode.Disposable {
         const exe = env?.executable.uri?.fsPath ?? envPath.path;
         if (exe) candidates.push(exe);
       } catch (e) {
-        this.log.warn(`resolveEnvironment failed: ${e}`);
+        this.log.warn(`resolveEnvironment failed: ${errorMessage(e)}`);
       }
     }
-    const setting = vscode.workspace.getConfiguration('pyprof', resource).get<string>('pythonPath');
+    const setting = settings.pythonPath(resource);
     if (setting) candidates.push(setting);
     candidates.push(process.platform === 'win32' ? 'python' : 'python3', 'python');
     for (const c of candidates) {
@@ -77,39 +97,40 @@ export class EnvironmentResolver implements vscode.Disposable {
   probe(executable: string): Promise<PythonInfo | undefined> {
     let p = this.probeCache.get(executable);
     if (!p) {
-      p = new Promise((resolve) => {
-        const code =
-          'import sys,json,sysconfig;print(json.dumps({"v":sys.version.split()[0],"M":sys.version_info[0],' +
-          '"m":sys.version_info[1],"ft":bool(sysconfig.get_config_var("Py_GIL_DISABLED")),"exe":sys.executable,' +
-          '"prefix":sys.prefix,"venv":sys.prefix!=sys.base_prefix}))';
-        execFile(executable, ['-I', '-c', code], { timeout: 15000, windowsHide: true }, (err, stdout) => {
-          if (err) {
-            resolve(undefined);
-            return;
-          }
-          try {
-            const r = JSON.parse(stdout.trim());
-            const envName = r.venv ? path.basename(r.prefix) : undefined;
-            resolve({
-              executable: isAbsolute(executable) ? executable : r.exe,
-              version: r.v,
-              major: r.M,
-              minor: r.m,
-              freeThreaded: r.ft,
-              label: `${envName ?? 'Python'} ${r.v}${r.ft ? 't' : ''}`,
-              envPath: r.venv ? r.prefix : undefined,
-            });
-          } catch {
-            resolve(undefined);
-          }
-        });
-      });
+      p = this.runProbe(executable);
       this.probeCache.set(executable, p);
-      p.then((v) => {
-        if (!v) this.probeCache.delete(executable);
+      // failures are not cached: the interpreter may be installed or repaired later
+      void p.then((info) => {
+        if (!info) this.probeCache.delete(executable);
       });
     }
     return p;
+  }
+
+  private runProbe(executable: string): Promise<PythonInfo | undefined> {
+    return new Promise((resolve) => {
+      const options = { timeout: PROBE_TIMEOUT_MS, windowsHide: true };
+      execFile(executable, ['-I', '-c', PROBE_SCRIPT], options, (err, stdout) => {
+        if (err) {
+          resolve(undefined);
+          return;
+        }
+        try {
+          const r = JSON.parse(stdout.trim()) as ProbeResult;
+          resolve({
+            executable: path.isAbsolute(executable) ? executable : r.executable,
+            version: r.version,
+            major: r.major,
+            minor: r.minor,
+            freeThreaded: r.freeThreaded,
+            label: `${r.inVenv ? path.basename(r.prefix) : 'Python'} ${r.version}${r.freeThreaded ? 't' : ''}`,
+            envPath: r.inVenv ? r.prefix : undefined,
+          });
+        } catch {
+          resolve(undefined);
+        }
+      });
+    });
   }
 
   isSupported(info: PythonInfo): boolean {
@@ -131,34 +152,29 @@ export class EnvironmentResolver implements vscode.Disposable {
       return undefined;
     }
     if (this.isSupported(info)) return info;
-    const want = `${MIN_MAJOR}.${MIN_MINOR}`;
-    const actions = ['Select Interpreter', `Create ${want} venv`, 'Learn More'];
+    const actions = ['Select Interpreter', `Create ${MIN_VERSION} venv`, 'Learn More'];
     const pick = await vscode.window.showWarningMessage(
-      `Profiling needs Python ${want}+ (Tachyon). The selected interpreter is ${info.label} (${info.executable}).`,
+      `Profiling needs Python ${MIN_VERSION}+ (Tachyon). The selected interpreter is ${info.label} (${info.executable}).`,
       ...actions,
     );
     if (pick === actions[0]) await vscode.commands.executeCommand('python.setInterpreter');
-    else if (pick === actions[1]) await this.createVenv(resource);
-    else if (pick === actions[2])
-      vscode.env.openExternal(vscode.Uri.parse('https://docs.python.org/3.15/library/profiling.sampling.html'));
+    else if (pick === actions[1]) this.createVenv(resource);
+    else if (pick === actions[2]) {
+      await vscode.env.openExternal(vscode.Uri.parse('https://docs.python.org/3.15/library/profiling.sampling.html'));
+    }
     return undefined;
   }
 
-  private async createVenv(resource?: vscode.Uri): Promise<void> {
+  private createVenv(resource?: vscode.Uri): void {
     const folder = resource ? vscode.workspace.getWorkspaceFolder(resource) : vscode.workspace.workspaceFolders?.[0];
-    const want = `${MIN_MAJOR}.${MIN_MINOR}`;
-    const hasUv = await which('uv');
-    const term = vscode.window.createTerminal({ name: `Create Python ${want} venv`, cwd: folder?.uri });
-    term.show();
-    if (hasUv) {
-      term.sendText(`uv venv -p ${want} .venv`);
-    } else if (process.platform === 'win32') {
-      term.sendText(`py -${want} -m venv .venv`);
-    } else {
-      term.sendText(`python${want} -m venv .venv`);
-    }
-    vscode.window.showInformationMessage(
-      `Creating .venv with Python ${want}${hasUv ? ' via uv' : ''}. Select it afterwards with "Python: Select Interpreter".`,
+    const hasUv = findOnPath('uv') !== undefined;
+    const terminal = vscode.window.createTerminal({ name: `Create Python ${MIN_VERSION} venv`, cwd: folder?.uri });
+    terminal.show();
+    if (hasUv) terminal.sendText(`uv venv -p ${MIN_VERSION} .venv`);
+    else if (process.platform === 'win32') terminal.sendText(`py -${MIN_VERSION} -m venv .venv`);
+    else terminal.sendText(`python${MIN_VERSION} -m venv .venv`);
+    void vscode.window.showInformationMessage(
+      `Creating .venv with Python ${MIN_VERSION}${hasUv ? ' via uv' : ''}. Select it afterwards with "Python: Select Interpreter".`,
     );
   }
 
@@ -169,36 +185,31 @@ export class EnvironmentResolver implements vscode.Disposable {
     try {
       const vars = api?.environments.getEnvironmentVariables(resource);
       if (vars) for (const [k, v] of Object.entries(vars)) if (v !== undefined) out[k] = v;
-    } catch {
-      /* ignore */
+    } catch (e) {
+      this.log.warn(`reading environment variables failed: ${errorMessage(e)}`);
     }
     return out;
   }
 
   dispose(): void {
-    this.disposables.forEach((d) => d.dispose());
+    for (const d of this.disposables) d.dispose();
     this.changed.dispose();
   }
 }
 
-function isAbsolute(p: string): boolean {
-  return path.isAbsolute(p);
-}
-
-export function which(cmd: string): Promise<string | undefined> {
-  const exts = process.platform === 'win32' ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
+/** Full path of an executable on PATH, like `which` / `where`. */
+function findOnPath(command: string): string | undefined {
+  const extensions = process.platform === 'win32' ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    for (const ext of exts) {
-      const full = path.join(dir, cmd + ext.toLowerCase());
+    for (const extension of extensions) {
+      const candidate = path.join(dir, command + extension.toLowerCase());
       try {
-        fs.accessSync(full, fs.constants.X_OK);
-        return Promise.resolve(full);
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
       } catch {
-        /* next */
+        /* not here: try the next location */
       }
     }
   }
-  return Promise.resolve(undefined);
+  return undefined;
 }
-
-export { parseDotEnv } from './dotenv';

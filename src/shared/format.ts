@@ -32,6 +32,32 @@ export function fmtCount(n: number): string {
   return `${(n / 1e6).toFixed(1)}M`;
 }
 
+/** Largest value, without the argument-count limit of `Math.max(...values)`. */
+export function maxOf(values: ArrayLike<number>): number | undefined {
+  if (!values.length) return undefined;
+  let max = values[0];
+  for (let i = 1; i < values.length; i++) if (values[i] > max) max = values[i];
+  return max;
+}
+
+export function mean(values: ArrayLike<number>): number | undefined {
+  if (!values.length) return undefined;
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) sum += values[i];
+  return sum / values.length;
+}
+
+export function percentile(values: readonly number[], p: number): number | undefined {
+  if (!values.length) return undefined;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+}
+
+/** True for frames without a source file to open (`<native>`, `<frozen …>`, `~`). */
+export function isSyntheticFile(file: string): boolean {
+  return !file || file.startsWith('<') || file.startsWith('~');
+}
+
 export function shortPath(file: string, maxParts = 2): string {
   const parts = file.split(/[\\/]/).filter(Boolean);
   if (parts.length <= maxParts) return file;

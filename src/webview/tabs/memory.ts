@@ -5,10 +5,10 @@ import { TimeSeriesChart } from '../components/timeseries';
 import { chartColor } from '../components/colors';
 import { FlameGraph } from '../components/flamegraph';
 import { DataTable } from '../components/table';
-import { fmtBytes, fmtCount, fmtMs, shortPath } from '../../shared/format';
-import type { SnapshotRec } from '../../shared/model';
+import { fmtBytes, fmtCount, fmtMs, maxOf, shortPath } from '../../shared/format';
+import type { SnapshotDiffRow, SnapshotRec } from '../../shared/model';
 
-type DiffRow = { sid: number; dSize: number; dCount: number; size: number; count: number };
+type DiffRow = SnapshotDiffRow;
 type SiteRow = { sid: number; size: number; count: number };
 
 export class MemoryTab implements Tab {
@@ -25,6 +25,7 @@ export class MemoryTab implements Tab {
   private objects: DataTable<{ name: string; count: number; delta: number }>;
   private gcTable: DataTable<{ gen: number; n: number; total: number; max: number; collected: number }>;
   private weight: 'size' | 'count' = 'size';
+  private countObjects: HTMLButtonElement;
   private lastSnapCount = -1;
 
   constructor(private readonly app: App) {
@@ -66,7 +67,7 @@ export class MemoryTab implements Tab {
         { label: 'Δ since previous', num: true, value: (r) => r.delta, render: (r) => (r.delta > 0 ? '+' : '') + fmtCount(r.delta) },
         { label: 'Type', value: (r) => r.name },
       ],
-      { empty: 'Click "Count objects" to list live objects by type' },
+      { empty: 'No object counts recorded' },
     );
     this.gcTable = new DataTable(
       [
@@ -78,6 +79,9 @@ export class MemoryTab implements Tab {
       ],
       { sortCol: 0, empty: 'No GC collections recorded' },
     );
+    this.countObjects = button('Count objects', () => app.command('objectCounts'), {
+      title: 'Walks gc.get_objects() in the target (pauses it briefly)',
+    });
     this.flameCard.append(h('h3', { style: 'padding:10px 12px 0' }, 'Allocation flame graph', h('span', { class: 'sub' }, 'live memory by call stack at the selected snapshot')), this.flame.el);
     this.el.append(
       this.actions,
@@ -88,7 +92,7 @@ export class MemoryTab implements Tab {
       h(
         'div',
         { class: 'grid two', style: 'margin-top:12px' },
-        h('div', { class: 'card' }, h('h3', null, 'Live objects by type', h('span', { class: 'actions' }, button('Count objects', () => app.command('objectCounts'), { title: 'Walks gc.get_objects() in the target (pauses it briefly)' }))), h('div', { style: 'max-height:320px;overflow:auto' }, this.objects.el)),
+        h('div', { class: 'card' }, h('h3', null, 'Live objects by type', h('span', { class: 'actions' }, this.countObjects)), h('div', { style: 'max-height:320px;overflow:auto' }, this.objects.el)),
         h('div', { class: 'card' }, h('h3', null, 'Garbage collector'), this.gcTable.el),
       ),
     );
@@ -98,11 +102,13 @@ export class MemoryTab implements Tab {
     const app = this.app;
     const m = app.model;
     this.renderActions();
+    // counting needs the agent inside a running program
+    this.countObjects.style.display = app.caps.live && app.caps.agent ? '' : 'none';
     // tiles
     const rss = m.tracks.get('rss');
     const traced = m.tracks.get('traced');
     const rssNow = rss?.v.at(-1);
-    const rssPeak = rss ? Math.max(...rss.v) : undefined;
+    const rssPeak = rss ? maxOf(rss.v) : undefined;
     const rssStart = rss?.v[0];
     const growth = rssNow !== undefined && rssStart ? rssNow - rssStart : undefined;
     const gcPause = m.gc.reduce((a, g) => a + g[1], 0);
@@ -210,11 +216,11 @@ export class MemoryTab implements Tab {
       h('div', { class: 'group' }, h('span', { class: 'label' }, 'Snapshot'), snapSel),
       h('div', { class: 'group' }, h('span', { class: 'label' }, 'compare with'), baseSel),
       segmented([{ value: 'size', label: 'Bytes' }, { value: 'count', label: 'Blocks' }], this.weight, (v) => {
-        this.weight = v as 'size' | 'count';
+        this.weight = v;
         this.renderSnapshots();
       }),
     );
-    const snap = snaps.find((s) => s.id === app.memSnap)!;
+    const snap = snaps.find((s) => s.id === app.memSnap) ?? snaps[snaps.length - 1];
     const base = app.memBase !== undefined && app.memBase !== app.memSnap ? snaps.find((s) => s.id === app.memBase) : undefined;
 
     if (base) {

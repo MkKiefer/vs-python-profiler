@@ -4,7 +4,7 @@ import type { App, CpuView, Tab } from '../app';
 import { FlameGraph } from '../components/flamegraph';
 import { CallTreeView, DataTable } from '../components/table';
 import { frameColor } from '../components/colors';
-import { Cat, type FnStat } from '../../shared/model';
+import { Cat, type Fn, type FnStat } from '../../shared/model';
 import { fmtPct, shortPath } from '../../shared/format';
 
 export class CpuTab implements Tab {
@@ -149,7 +149,7 @@ export class CpuTab implements Tab {
     const opts = { hideLibs: app.hideLibs, byLine: app.byLine };
 
     if (app.focusFn !== undefined && app.model.fns[app.focusFn]) {
-      if (structural) this.mountFocus();
+      if (structural) this.mountFocus(app.model.fns[app.focusFn]);
       this.callers.setData(app.model, app.model.buildTree(counts, { ...opts, focusFn: app.focusFn, focus: 'callers' }), structural);
       this.callees.setData(app.model, app.model.buildTree(counts, { ...opts, focusFn: app.focusFn, focus: 'callees' }));
     } else if (app.cpuView === 'flame') {
@@ -170,9 +170,8 @@ export class CpuTab implements Tab {
     this.lastStructure = structure;
   }
 
-  private mountFocus(): void {
+  private mountFocus(f: Fn): void {
     const app = this.app;
-    const f = app.model.fns[app.focusFn!];
     const banner = h(
       'div',
       { class: 'crumbs' },

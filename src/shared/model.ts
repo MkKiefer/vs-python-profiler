@@ -13,12 +13,12 @@ export const enum Cat {
   Synth = 3,
 }
 
+/** Thread status bits of a sample (`_remote_debugging.THREAD_STATUS_*`). */
 export const STATUS_HAS_GIL = 1;
 export const STATUS_ON_CPU = 2;
-export const STATUS_UNKNOWN = 4;
 export const STATUS_GIL_REQUESTED = 8;
-export const STATUS_HAS_EXCEPTION = 16;
-export const STATUS_MAIN_THREAD = 32;
+
+const DEFAULT_RATE_HZ = 1000;
 
 export type Mode = 'wall' | 'cpu' | 'gil';
 export type Source = 'threads' | 'async';
@@ -62,6 +62,31 @@ export interface EventRec {
   [k: string]: unknown;
 }
 
+/** Session facts recorded by the collector (`Store.set_meta`). */
+export interface ProfileMeta {
+  pid?: number;
+  python?: string;
+  implementation?: string;
+  freeThreaded?: boolean;
+  platform?: string;
+  startedAt?: number;
+  label?: string | null;
+  agent?: boolean;
+  executable?: string | null;
+  argv?: string[];
+  cwd?: string | null;
+  options?: { rateHz?: number };
+}
+
+export interface ObjectCounts {
+  t: number;
+  counts: [string, number][];
+}
+
+export type GcRecord = [t: number, durationMs: number, generation: number, collected: number, heapSize: number];
+export type TaskEvent = [t: number, task: number, state: string];
+export type Marker = [t: number, name: string];
+
 export interface Delta {
   now: number;
   frames: [string, string, number, number][];
@@ -69,17 +94,36 @@ export interface Delta {
   samples: Columns;
   asyncSamples: Columns;
   tracks: Record<string, [number, number][]>;
-  gc: [number, number, number, number, number][];
-  markers: [number, string][];
+  gc: GcRecord[];
+  markers: Marker[];
   events: EventRec[];
-  taskEvents: [number, number, string][];
+  taskEvents: TaskEvent[];
   tasks: TaskRec[];
   threads: Record<string, string>;
   snapshots: SnapshotRec[];
-  objectCounts: { t: number; counts: [string, number][] }[];
-  meta?: Record<string, unknown>;
-  stats?: { samples: number; errors: number; rateHz: number };
+  objectCounts: ObjectCounts[];
+  meta?: ProfileMeta;
+  stats?: SamplingStats;
   format?: string;
+}
+
+export interface SamplingStats {
+  samples: number;
+  errors: number;
+  rateHz: number;
+}
+
+export interface LineHeat {
+  self: number;
+  total: number;
+}
+
+export interface SnapshotDiffRow {
+  sid: number;
+  dSize: number;
+  dCount: number;
+  size: number;
+  count: number;
 }
 
 export interface Frame {
@@ -155,15 +199,19 @@ class SampleTable {
     if (n <= this.t.length) return;
     let cap = this.t.length;
     while (cap < n) cap *= 2;
-    const grow = <T extends Float64Array | Int32Array | Uint8Array>(a: T, Ctor: new (n: number) => T): T => {
-      const b = new Ctor(cap);
-      b.set(a.subarray(0, this.length) as never);
-      return b;
-    };
-    this.t = grow(this.t, Float64Array);
-    this.tid = grow(this.tid, Float64Array);
-    this.stack = grow(this.stack, Int32Array);
-    this.status = grow(this.status, Uint8Array);
+    const used = this.length;
+    const t = new Float64Array(cap);
+    t.set(this.t.subarray(0, used));
+    const tid = new Float64Array(cap);
+    tid.set(this.tid.subarray(0, used));
+    const stack = new Int32Array(cap);
+    stack.set(this.stack.subarray(0, used));
+    const status = new Uint8Array(cap);
+    status.set(this.status.subarray(0, used));
+    this.t = t;
+    this.tid = tid;
+    this.stack = stack;
+    this.status = status;
   }
 
   /** first index with t >= value */
@@ -198,17 +246,17 @@ export class ProfileModel {
   samples = new SampleTable();
   asyncSamples = new SampleTable();
   tracks = new Map<string, { t: number[]; v: number[] }>();
-  gc: [number, number, number, number, number][] = [];
-  markers: [number, string][] = [];
+  gc: GcRecord[] = [];
+  markers: Marker[] = [];
   events: EventRec[] = [];
   threads = new Map<number, string>();
   threadSampleCounts = new Map<number, number>();
   tasks = new Map<number, TaskRec>();
-  taskEvents: [number, number, string][] = [];
+  taskEvents: TaskEvent[] = [];
   snapshots: SnapshotRec[] = [];
-  objectCounts: { t: number; counts: [string, number][] }[] = [];
-  meta: Record<string, unknown> = {};
-  stats = { samples: 0, errors: 0, rateHz: 0 };
+  objectCounts: ObjectCounts[] = [];
+  meta: ProfileMeta = {};
+  stats: SamplingStats = { samples: 0, errors: 0, rateHz: 0 };
   now = 0;
   /** bumps on every applied delta; use for memoisation */
   version = 0;
@@ -288,6 +336,17 @@ export class ProfileModel {
     };
   }
 
+  /** Configured sampling rate (the measured one is `stats.rateHz`). */
+  get rateHz(): number {
+    const rate = Number(this.meta.options?.rateHz);
+    return rate > 0 ? rate : DEFAULT_RATE_HZ;
+  }
+
+  /** Approximate time one sample stands for, per thread. */
+  get sampleIntervalMs(): number {
+    return 1000 / this.rateHz;
+  }
+
   get duration(): number {
     const n = this.samples.length;
     const last = n ? this.samples.t[n - 1] : 0;
@@ -296,8 +355,8 @@ export class ProfileModel {
 
   /** frame ids root → leaf for a stack id (memoised) */
   path(sid: number): number[] {
-    let p = this.pathCache.get(sid);
-    if (p) return p;
+    const cached = this.pathCache.get(sid);
+    if (cached) return cached;
     const out: number[] = [];
     let s = sid;
     while (s >= 0) {
@@ -359,7 +418,7 @@ export class ProfileModel {
       const fn = this.frames[frame].fn;
       const key = opts.byLine ? frame : fn;
       let m = childMaps.get(node);
-      if (!m) childMaps.set(node, (m = new Map()));
+      if (!m) childMaps.set(node, (m = new Map<number, TreeNode>()));
       let c = m.get(key);
       if (!c) {
         c = { key, fn, frame, total: 0, self: 0, children: [] };
@@ -429,8 +488,8 @@ export class ProfileModel {
   }
 
   /** per file → line → {self,total} weights (for editor heat) */
-  lineHeat(counts: Map<number, number>): Map<string, Map<number, { self: number; total: number }>> {
-    const out = new Map<string, Map<number, { self: number; total: number }>>();
+  lineHeat(counts: Map<number, number>): Map<string, Map<number, LineHeat>> {
+    const out = new Map<string, Map<number, LineHeat>>();
     const seen = new Set<string>();
     for (const [sid, w] of counts) {
       const frames = this.path(sid);
@@ -440,7 +499,7 @@ export class ProfileModel {
         if (!f.line || f.cat === Cat.Synth) continue;
         const k = f.file + ':' + f.line;
         let byLine = out.get(f.file);
-        if (!byLine) out.set(f.file, (byLine = new Map()));
+        if (!byLine) out.set(f.file, (byLine = new Map<number, LineHeat>()));
         let rec = byLine.get(f.line);
         if (!rec) byLine.set(f.line, (rec = { self: 0, total: 0 }));
         if (!seen.has(k)) {
@@ -451,11 +510,6 @@ export class ProfileModel {
       }
     }
     return out;
-  }
-
-  /** per-function stats inside one file (for CodeLens) */
-  functionsInFile(file: string, counts: Map<number, number>): FnStat[] {
-    return this.topFunctions(counts).filter((s) => this.fns[s.fn].file === file);
   }
 
   /** samples per bucket, optionally split by status (for timelines) */
@@ -498,13 +552,14 @@ export class ProfileModel {
   }
 
   /** allocation diff between two snapshots, by stack */
-  snapshotDiff(a: number, b: number): { sid: number; dSize: number; dCount: number; size: number; count: number }[] {
+  snapshotDiff(a: number, b: number): SnapshotDiffRow[] {
     const A = this.snapshots.find((x) => x.id === a);
     const B = this.snapshots.find((x) => x.id === b);
     if (!A || !B) return [];
-    const ma = new Map(A.entries.map(([s, size, count]) => [s, [size, count]]));
-    const mb = new Map(B.entries.map(([s, size, count]) => [s, [size, count]]));
-    const rows: { sid: number; dSize: number; dCount: number; size: number; count: number }[] = [];
+    const bySid = (s: SnapshotRec) => new Map(s.entries.map(([sid, size, count]): [number, [number, number]] => [sid, [size, count]]));
+    const ma = bySid(A);
+    const mb = bySid(B);
+    const rows: SnapshotDiffRow[] = [];
     for (const sid of new Set([...ma.keys(), ...mb.keys()])) {
       const [sa, ca] = ma.get(sid) ?? [0, 0];
       const [sb, cb] = mb.get(sid) ?? [0, 0];

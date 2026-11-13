@@ -5,7 +5,7 @@ import { TimeSeriesChart } from '../components/timeseries';
 import { chartColor } from '../components/colors';
 import { TaskGantt } from '../components/timeline';
 import { DataTable } from '../components/table';
-import { fmtMs, fmtCount } from '../../shared/format';
+import { fmtCount, fmtMs, maxOf, percentile } from '../../shared/format';
 import type { EventRec, TaskRec } from '../../shared/model';
 
 const EVENT_KINDS = new Set(['slow-callback', 'never-awaited', 'task-destroyed-pending', 'exception-never-retrieved', 'asyncio']);
@@ -28,9 +28,8 @@ export class AsyncTab implements Tab {
     });
     this.gantt = new TaskGantt((a, b) => app.setRange(a, b), () => app.clearRange());
     const openFromMessage = (e: EventRec) => {
-      const file = (e.file as string) ?? undefined;
-      if (file) return app.open(file, Number(e.line ?? 1));
-      const m = String(e.handle ?? e.message).match(/at (.+?):(\d+)/);
+      if (typeof e.file === 'string') return app.open(e.file, Number(e.line ?? 1));
+      const m = detail(e).match(/at (.+?):(\d+)/);
       if (m) app.open(m[1], Number(m[2]));
     };
     this.events = new DataTable<EventRec>(
@@ -38,7 +37,7 @@ export class AsyncTab implements Tab {
         { label: 'Time', num: true, value: (e) => e.t, render: (e) => fmtMs(e.t) },
         { label: 'Kind', value: (e) => e.kind, render: (e) => h('span', { class: `kind ${e.kind}` }, e.kind) },
         { label: 'Blocked', num: true, value: (e) => Number(e.seconds ?? 0), render: (e) => (e.seconds ? fmtMs(Number(e.seconds) * 1000) : '') },
-        { label: 'Details', cls: 'msg', value: (e) => e.message, render: (e) => h('span', { class: 'mono' }, String(e.handle ?? e.message).slice(0, 400)) },
+        { label: 'Details', cls: 'msg', value: (e) => e.message, render: (e) => h('span', { class: 'mono' }, detail(e).slice(0, 400)) },
       ],
       { onDblClick: openFromMessage, onClick: openFromMessage, empty: 'No asyncio debug events. Enable asyncio debug mode to detect slow callbacks and never-awaited coroutines.' },
     );
@@ -99,7 +98,7 @@ export class AsyncTab implements Tab {
     const live = tasksAll.filter((t) => t.end === null);
     const events = m.events.filter((e) => EVENT_KINDS.has(e.kind));
     const slow = events.filter((e) => e.kind === 'slow-callback');
-    const maxLag = lag ? Math.max(...lag.v) : undefined;
+    const maxLag = lag ? maxOf(lag.v) : undefined;
     const p99 = lag ? percentile(lag.v, 0.99) : undefined;
     this.tiles.replaceChildren(
       tile('Tasks alive', fmtCount(live.length), `${fmtCount(tasksAll.length)} seen`),
@@ -116,8 +115,7 @@ export class AsyncTab implements Tab {
   }
 }
 
-function percentile(v: number[], p: number): number {
-  if (!v.length) return 0;
-  const s = [...v].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.floor(p * s.length))];
+/** The most specific text of a debug event: the offending handle if asyncio reported one. */
+function detail(event: EventRec): string {
+  return typeof event.handle === 'string' ? event.handle : event.message;
 }

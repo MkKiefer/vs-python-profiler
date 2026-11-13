@@ -90,18 +90,18 @@ export class TimeSeriesChart {
   }
 
   private xToT(x: number): number {
-    const [t0, t1] = this.data!.domain;
+    const [t0, t1] = this.data?.domain ?? [0, 1];
     return t0 + ((x - PAD.l) / (this.width() - PAD.l - PAD.r)) * (t1 - t0);
   }
 
   private tToX(t: number): number {
-    const [t0, t1] = this.data!.domain;
+    const [t0, t1] = this.data?.domain ?? [0, 1];
     return PAD.l + ((t - t0) / Math.max(1e-9, t1 - t0)) * (this.width() - PAD.l - PAD.r);
   }
 
   setData(d: ChartData): void {
     this.data = d;
-    this.legend.innerHTML = '';
+    this.legend.replaceChildren();
     for (const s of d.series) {
       const i = h('i');
       i.style.background = s.color;

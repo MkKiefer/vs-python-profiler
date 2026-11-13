@@ -121,8 +121,8 @@ export class FlameGraph {
     return this.root ? walk(this.root, []) : undefined;
   }
 
-  private zoomNode(): { node: TreeNode; chain: TreeNode[] } {
-    let node = this.root!;
+  private zoomNode(root: TreeNode): { node: TreeNode; chain: TreeNode[] } {
+    let node = root;
     const chain: TreeNode[] = [node];
     for (const key of this.zoomPath) {
       const next = node.children.find((c) => c.key === key);
@@ -134,15 +134,13 @@ export class FlameGraph {
   }
 
   private name(n: TreeNode): string {
-    if (n.frame < 0) return 'all';
-    const f = this.model!.frames[n.frame];
-    return f.func;
+    return this.model?.frames[n.frame]?.func ?? 'all';
   }
 
   draw(): void {
     if (!this.root || !this.model) return;
     const model = this.model;
-    const { node: zoom, chain } = this.zoomNode();
+    const { node: zoom, chain } = this.zoomNode(this.root);
     this.renderCrumbs(chain);
     const W = this.wrap.clientWidth || 600;
     // depth of visible subtree
@@ -168,9 +166,9 @@ export class FlameGraph {
     const drawRect = (n: TreeNode, x: number, y: number, w: number, depth: number, ancestor = false) => {
       const isRoot = n.frame < 0;
       const f = isRoot ? undefined : model.frames[n.frame];
-      const label = isRoot ? `all (${this.opts.format(n.total)})` : f!.func;
+      const label = f ? f.func : `all (${this.opts.format(n.total)})`;
       const match = !searching || (f && (f.func.toLowerCase().includes(this.search) || f.file.toLowerCase().includes(this.search)));
-      ctx.fillStyle = isRoot ? 'rgba(128,128,128,0.35)' : frameColor(f!.cat, f!.func, !match || ancestor);
+      ctx.fillStyle = f ? frameColor(f.cat, f.func, !match || ancestor) : 'rgba(128,128,128,0.35)';
       ctx.fillRect(x, y, Math.max(0.5, w - 1), ROW - 1);
       if (this.hover === n) {
         ctx.strokeStyle = 'rgba(255,255,255,0.9)';
@@ -205,7 +203,7 @@ export class FlameGraph {
   }
 
   private renderCrumbs(chain: TreeNode[]): void {
-    this.crumbs.innerHTML = '';
+    this.crumbs.replaceChildren();
     if (chain.length <= 1) {
       this.crumbs.appendChild(
         h('span', { class: 'muted' }, 'Click a frame to zoom · double-click to open source · right-click for callers/callees · Esc to zoom out'),

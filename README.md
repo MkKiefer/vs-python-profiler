@@ -47,29 +47,41 @@ sampling, task graphs and GC stats still work.
 ## Architecture
 
 ```
-VS Code extension host (TypeScript)                       Webview dashboard (TS, canvas)
- ├ EnvironmentResolver ← ms-python API (interpreter per resource, .env)   ▲ postMessage
- ├ LaunchAdapter       ← debugpy configs, python-profiler debug type      │ (init + deltas)
- ├ SessionManager ─────────────────────────────────────────────────────────┘
+VS Code extension host (TypeScript, src/extension)        Webview dashboard (TS, canvas, src/webview)
+ ├ extension.ts        composition root                                   ▲ postMessage
+ ├ EnvironmentResolver ← ms-python API (interpreter per resource, .env)   │ (init + deltas)
+ ├ LaunchAdapter       ← debugpy configs, python-profiler debug type      │
+ ├ SessionManager / Session / CollectorClient ─────────────────────────────┘
+ ├ SessionActions · Commands (every pyprof.* command)
  ├ TerminalHub (PYPROF_HUB, `pyprof` on PATH)
- ├ EditorHeat (decorations, CodeLens) · Views · StatusBar
+ ├ Dashboards · EditorHeat (decorations, CodeLens) · views/ · StatusBar
  │
- │ JSON-lines RPC over stdio
+ │ JSON-lines RPC over stdio            contract: src/shared/protocol.ts
  ▼
 Collector  (python -I, *target's* interpreter, stdlib only)  python/_vscode_pyprof/
- ├ sampler.py   Tachyon adapter: _remote_debugging.RemoteUnwinder, async stacks, task graph, GC, RSS/CPU, children
- ├ store.py     interned frames + stack prefix tree + columnar samples → deltas / .pyprof
+ ├ cli.py            entry point and composition root
+ ├ collector.py      the RPC API; owns sampler, agent connection and store
+ ├ sampler.py        fixed-rate sampling loop: stacks, async stacks, task graph, GC, RSS/CPU, children
+ ├ tachyon.py        the only module that touches _remote_debugging
+ ├ store.py          interned frames + stack prefix tree + columnar samples → deltas / .pyprof
+ ├ frame_classifier.py · funcresolver.py · procstats.py · options.py · records.py · wire.py · rpc.py
  ├ agent_server.py ◄── localhost TCP + token ──► agent.py (inside the target)
- │                                               tracemalloc, loop-lag probe, asyncio debug, object counts
- └ launcher.py  runs your program in *your* environment (runpy), starts the agent
+ │   agent_injector.py (sys.remote_exec)         tracemalloc, loop-lag probe, asyncio debug, object counts
+ ├ launcher.py       runs your program in *your* environment (runpy), starts the agent
+ └ processes.py      standalone script: lists Python processes
 ```
 
 - **One data model.** The collector's store and the TypeScript `ProfileModel`
   (`src/shared/model.ts`) share one schema: frames, stack prefix tree, samples
   (`t, tid, stack, status`), tracks, tasks, snapshots and events. Live deltas and
   `.pyprof` files (gzip JSON) have the same shape.
+- **One wire contract.** Every message that crosses a process boundary (webview ⇄
+  extension ⇄ collector, terminal launcher → extension) is declared in
+  `src/shared/protocol.ts`; the Python side validates incoming JSON once, at the
+  boundary, through `wire.WireReader`.
 - **Private API, isolated.** `_remote_debugging` is CPython-internal, so only
-  `sampler.py` touches it, with fallbacks for changed signatures.
+  `tachyon.py` touches it, with fallbacks for changed signatures. Its types are
+  declared in `python/stubs/`.
 - **Start mode always uses a real terminal.** VS Code runs the launcher with your
   interpreter, so you get a TTY, stdin and colors. The agent's hello tells the collector
   which PID to sample, which also handles Windows venv launcher stubs.
@@ -78,15 +90,46 @@ Collector  (python -I, *target's* interpreter, stdlib only)  python/_vscode_pypr
 
 ```bash
 npm install
-npm run build          # bundles dist/extension.js and dist/webview.js
-npm run typecheck
-npm test               # model/exporter tests against real recorded profiles (test/fixtures)
-python3.15 -W ignore python/tests/test_e2e.py   # collector end-to-end: launch, attach+inject, memory, asyncio, terminal hub
+npm run check              # typecheck + eslint + tests + build (the TypeScript gate)
+
+cd python
+pdm install -G dev         # Python 3.15 venv with ruff, mypy, vulture
+pdm run check              # ruff lint + format check, mypy --strict, vulture, unit tests (the Python gate)
+pdm run test:integration   # collector end-to-end: launch, attach+inject, memory, asyncio, terminal hub
 ```
+
+| Tests | What they cover |
+|---|---|
+| `test/*.test.ts` | profile model and exporters against recorded profiles (`test/fixtures`), launch-config parsing, formatting, and an activation smoke test that loads the extension against a stub of the VS Code API |
+| `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `PYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`PYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
+| `python/tests/unit/` | one test module per source module of the collector; no target process needed |
+| `python/tests/integration/` | drives a real collector over stdio exactly like the extension, profiling the programs in `test-apps/` |
 
 Press **F5** ("Run Extension") to open an Extension Development Host on `test-apps/`
 (`cpu_bound.py`, `leaky.py`, `async_storm.py`).
 
 Settings are under `pyprof.*`: sampling rate, blocking sampling, tracemalloc on start
 and frames, asyncio debug and slow-callback threshold, heat map metric, CodeLens,
-child-process handling, terminal integration and auto-save.
+child-process handling, terminal integration and auto-save. `src/extension/settings.ts`
+is the only module that reads them.
+
+### Coding standards
+
+The Python code follows the team's Python and unittest style guides: behaviour lives
+in classes with constructor-injected collaborators, interfaces are ABCs, imports are
+absolute and at the top of the file, there is no `Any`, and the gate is `pdm run check`.
+The TypeScript code follows the TypeScript rules of the Vue & TypeScript guide (no
+`any`, no non-null assertions, one module for the wire contract, no fire-and-forget
+promises), enforced by ESLint.
+
+This project has a few **documented exceptions**, all caused by code that runs outside
+the collector's own Python 3.15 process:
+
+| Exception | Where | Why |
+|---|---|---|
+| Lazy imports inside functions | `agent.py` (`asyncio`, `tracemalloc`, `logging`, `warnings`, `gc`), `launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*. Importing modules the program does not use itself would slow it down, show up in its profile, and break the agent's "does this program use asyncio?" check. |
+| Imports after a version check | `cli.py`, `launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
+| Python 3.10-compatible syntax | `__init__.py`, `cli.py`, `launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
+| No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |
+| Module-level entry points | `cli.main`, `launcher.cli_main`, `agent.start` | Called by name from the shell shims and from `sys.remote_exec`; they only delegate to a class. |
+| Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |

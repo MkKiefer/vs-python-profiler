@@ -11,18 +11,22 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Attrs | 
       if (k.startsWith('on') && typeof v === 'function') {
         el.addEventListener(k.slice(2).toLowerCase(), v as EventListener);
       } else if (k === 'class') {
-        el.className = String(v);
+        el.className = attrText(v);
       } else if (k === 'style') {
-        el.setAttribute('style', String(v));
+        el.setAttribute('style', attrText(v));
       } else if (k in el && typeof v !== 'string') {
         (el as unknown as Record<string, unknown>)[k] = v;
       } else {
-        el.setAttribute(k, v === true ? '' : String(v));
+        el.setAttribute(k, v === true ? '' : attrText(v));
       }
     }
   }
   append(el, children);
   return el;
+}
+
+function attrText(value: unknown): string {
+  return typeof value === 'string' ? value : typeof value === 'number' ? String(value) : '';
 }
 
 function append(el: HTMLElement, children: Child[]): void {
@@ -31,11 +35,6 @@ function append(el: HTMLElement, children: Child[]): void {
     if (Array.isArray(c)) append(el, c);
     else el.appendChild(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
   }
-}
-
-export function clear(el: HTMLElement): HTMLElement {
-  while (el.firstChild) el.removeChild(el.firstChild);
-  return el;
 }
 
 export function cssVar(name: string, fallback = '#888'): string {
@@ -114,7 +113,8 @@ export function fitCanvas(canvas: HTMLCanvasElement, width: number, height: numb
     canvas.style.width = `${w}px`;
     canvas.style.height = `${hh}px`;
   }
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('2D canvas rendering is not available');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return ctx;
 }
@@ -128,9 +128,7 @@ export function tooltip(): { show: (x: number, y: number, html: HTMLElement | st
   const tip = el;
   return {
     show(x, y, content) {
-      clear(tip);
-      if (typeof content === 'string') tip.textContent = content;
-      else tip.appendChild(content);
+      tip.replaceChildren(content);
       tip.style.display = 'block';
       const r = tip.getBoundingClientRect();
       const left = Math.min(window.innerWidth - r.width - 8, x + 14);

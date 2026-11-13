@@ -15,8 +15,25 @@ export function toCollapsed(model: ProfileModel): string {
   return lines.join('\n') + '\n';
 }
 
+/** The subset of speedscope's file format we write (sampled profiles). */
+export interface SpeedscopeFile {
+  $schema: string;
+  name: string;
+  exporter: string;
+  shared: { frames: { name: string; file: string; line: number }[] };
+  profiles: {
+    type: 'sampled';
+    name: string;
+    unit: 'milliseconds';
+    startValue: number;
+    endValue: number;
+    samples: number[][];
+    weights: number[];
+  }[];
+}
+
 /** speedscope sampled profile, one profile per thread. https://www.speedscope.app */
-export function toSpeedscope(model: ProfileModel, name: string): object {
+export function toSpeedscope(model: ProfileModel, name: string): SpeedscopeFile {
   const frameIndex = new Map<number, number>();
   const frames: { name: string; file: string; line: number }[] = [];
   const idx = (fr: number) => {
@@ -29,8 +46,7 @@ export function toSpeedscope(model: ProfileModel, name: string): object {
     }
     return i;
   };
-  const rate = Number((model.meta.options as any)?.rateHz ?? 1000);
-  const interval = 1000 / rate;
+  const interval = model.sampleIntervalMs;
   const byThread = new Map<number, { samples: number[][]; weights: number[]; start: number; end: number }>();
   const t = model.samples;
   for (let i = 0; i < t.length; i++) {
@@ -47,9 +63,9 @@ export function toSpeedscope(model: ProfileModel, name: string): object {
     exporter: 'vscode-python-profiler',
     shared: { frames },
     profiles: [...byThread].map(([tid, p]) => ({
-      type: 'sampled',
+      type: 'sampled' as const,
       name: model.threadName(tid),
-      unit: 'milliseconds',
+      unit: 'milliseconds' as const,
       startValue: p.start,
       endValue: p.end,
       samples: p.samples,

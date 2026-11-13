@@ -16,7 +16,7 @@ export function parseDotEnv(text: string, base: Record<string, string | undefine
     } else {
       v = v.replace(/\s+#.*$/, '');
     }
-    if (expand) v = v.replace(/\$\{(\w+)\}/g, (_, n) => out[n] ?? base[n] ?? '');
+    if (expand) v = v.replace(/\$\{(\w+)\}/g, (_match, n: string) => out[n] ?? base[n] ?? '');
     out[m[1]] = v;
   }
   return out;

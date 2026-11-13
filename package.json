@@ -142,6 +142,12 @@
         "category": "Python Profiler"
       },
       {
+        "command": "pyprof.removeSession",
+        "title": "Remove Session",
+        "category": "Python Profiler",
+        "icon": "$(close)"
+      },
+      {
         "command": "pyprof.deleteSession",
         "title": "Delete Saved Profile",
         "category": "Python Profiler",
@@ -220,7 +226,7 @@
         },
         {
           "command": "pyprof.openDashboard",
-          "when": "view == pyprof.sessions && viewItem =~ /^session/",
+          "when": "view == pyprof.sessions && viewItem =~ /^session\\.(live|done)$/",
           "group": "inline@0"
         },
         {
@@ -235,13 +241,28 @@
         },
         {
           "command": "pyprof.saveProfile",
-          "when": "view == pyprof.sessions && viewItem =~ /^session/",
+          "when": "view == pyprof.sessions && viewItem =~ /^session\\.(live|done)$/",
           "group": "1_actions@3"
         },
         {
           "command": "pyprof.deleteSession",
           "when": "view == pyprof.sessions && viewItem == session.saved",
           "group": "inline@2"
+        },
+        {
+          "command": "pyprof.export",
+          "when": "view == pyprof.sessions && viewItem =~ /^session\\.(live|done)$/",
+          "group": "1_actions@4"
+        },
+        {
+          "command": "pyprof.removeSession",
+          "when": "view == pyprof.sessions && viewItem == session.done",
+          "group": "inline@2"
+        },
+        {
+          "command": "pyprof.removeSession",
+          "when": "view == pyprof.sessions && viewItem =~ /^session\\.(live|done)$/",
+          "group": "2_remove@1"
         }
       ],
       "commandPalette": [
@@ -276,6 +297,10 @@
         {
           "command": "pyprof.mark",
           "when": "pyprof.hasLiveSession"
+        },
+        {
+          "command": "pyprof.removeSession",
+          "when": "false"
         }
       ]
     },
@@ -613,8 +638,12 @@
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint src test",
     "test": "node esbuild.mjs --tests && node --test dist-test/*.test.cjs",
-    "test:python": "python3.15 -W ignore python/tests/test_e2e.py",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check:python": "cd python && pdm run check",
+    "test:python": "cd python && pdm run test",
+    "test:integration": "cd python && pdm run test:integration",
     "package": "node esbuild.mjs --production && vsce package --no-dependencies",
     "vscode:prepublish": "node esbuild.mjs --production"
   },
@@ -623,7 +652,9 @@
     "@types/vscode": "^1.95.0",
     "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.3"
+    "eslint": "^10.14.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.2"
   },
   "dependencies": {
     "@vscode/python-extension": "^1.0.6"

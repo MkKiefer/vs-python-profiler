@@ -75,7 +75,8 @@ abstract class CanvasTimeline {
 
   private drawBrush(): void {
     if (!this.drag) return;
-    const ctx = this.canvas.getContext('2d')!;
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) return;
     const x0 = Math.min(this.drag.x0, this.drag.x1);
     const x1 = Math.max(this.drag.x0, this.drag.x1);
     ctx.fillStyle = 'rgba(55,148,255,0.2)';
@@ -127,6 +128,7 @@ export class TaskGantt extends CanvasTimeline {
 
   draw(): void {
     if (!this.model) return;
+    const now = this.model.now;
     const W = this.width();
     const H = Math.max(60, this.tasks.length * ROW_H + 24);
     const ctx = fitCanvas(this.canvas, W, H);
@@ -142,7 +144,7 @@ export class TaskGantt extends CanvasTimeline {
       ctx.globalAlpha = t.end === null ? 1 : 0.65;
       ctx.fillText(t.name.length > 24 ? t.name.slice(0, 23) + '…' : t.name, 4, y + ROW_H / 2);
       ctx.globalAlpha = 1;
-      const segs = this.segments.get(t.id) ?? [[t.start, t.end ?? this.model!.now, 'waiting']];
+      const segs = this.segments.get(t.id) ?? [[t.start, t.end ?? now, 'waiting']];
       for (const [a, b, st] of segs) {
         const x0 = Math.max(LABEL_W, this.tToX(a));
         const x1 = Math.min(W - 8, this.tToX(b));

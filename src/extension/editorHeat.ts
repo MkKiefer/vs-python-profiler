@@ -5,12 +5,25 @@
  */
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import type { Session, SessionManager } from './session';
-import type { Dashboards } from './dashboard';
+import type { Dashboards } from './dashboards';
+import type { Session } from './session';
+import type { SessionManager } from './sessionManager';
+import { settings } from './settings';
 import { fmtMs, fmtPct } from '../shared/format';
-import type { Filter } from '../shared/model';
+import type { Filter, LineHeat } from '../shared/model';
 
 const LEVELS = 6;
+/** lines below this share of the selection are not decorated at all */
+const MIN_HEAT_SHARE = 0.002;
+/** lines and functions below this share get no inline text / CodeLens */
+const MIN_LABEL_SHARE = 0.005;
+const LIVE_REFRESH_MS = 1000;
+
+interface HeatData {
+  heat: Map<string, Map<number, LineHeat>>;
+  counts: Map<number, number>;
+  total: number;
+}
 
 export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
   private decorations: vscode.TextEditorDecorationType[] = [];
@@ -20,7 +33,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
   private lastVersion = '';
   private viewEpoch = 0;
   private interval: NodeJS.Timeout;
-  private cache: { heat: ReturnType<Session['model']['lineHeat']>; counts: Map<number, number>; total: number } | undefined;
+  private cache: HeatData | undefined;
   private readonly lensChanged = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.lensChanged.event;
   private disposables: vscode.Disposable[] = [];
@@ -29,7 +42,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
     private readonly sessions: SessionManager,
     private readonly dashboards: Dashboards,
   ) {
-    this.enabled = vscode.workspace.getConfiguration('pyprof').get('heatMap.enabled', true);
+    this.enabled = settings.heatMapEnabled();
     for (let i = 0; i < LEVELS; i++) {
       const alpha = 0.06 + (i / (LEVELS - 1)) * 0.3;
       this.decorations.push(
@@ -55,8 +68,8 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
         this.schedule(50);
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('pyprof')) {
-          this.enabled = vscode.workspace.getConfiguration('pyprof').get('heatMap.enabled', true);
+        if (settings.changedBy(e)) {
+          this.enabled = settings.heatMapEnabled();
           this.lastVersion = '';
           this.schedule(0);
         }
@@ -67,14 +80,14 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
     this.interval = setInterval(() => {
       const s = this.sessions.active;
       if (s && this.key(s) !== this.lastVersion) this.schedule(0);
-    }, 1000);
+    }, LIVE_REFRESH_MS);
   }
 
-  toggle(): void {
+  async toggle(): Promise<void> {
     this.enabled = !this.enabled;
-    void vscode.workspace.getConfiguration('pyprof').update('heatMap.enabled', this.enabled, vscode.ConfigurationTarget.Global);
     this.lastVersion = '';
     this.schedule(0);
+    await settings.setHeatMapEnabled(this.enabled);
   }
 
   private key(s: Session): string {
@@ -87,7 +100,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
   }
 
   private filterFor(s: Session): Filter {
-    const v = this.dashboards.viewState.get(s.id);
+    const v = this.dashboards.viewState(s);
     return {
       mode: v?.mode ?? 'wall',
       source: 'threads',
@@ -97,7 +110,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
     };
   }
 
-  private compute(s: Session) {
+  private compute(s: Session): HeatData {
     const key = this.key(s);
     if (this.cache && this.lastVersion === key) return this.cache;
     const counts = s.model.countStacks(this.filterFor(s));
@@ -120,8 +133,8 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
       return;
     }
     const { heat, total } = this.compute(s);
-    const metric = vscode.workspace.getConfiguration('pyprof').get<'self' | 'total'>('heatMap.metric', 'total');
-    const msPerSample = 1000 / Number((s.model.meta.options as any)?.rateHz ?? 1000);
+    const metric = settings.heatMapMetric();
+    const msPerSample = s.model.sampleIntervalMs;
     for (const e of editors) {
       const lines = lookupFile(heat, e.document.uri.fsPath);
       const buckets: vscode.DecorationOptions[][] = Array.from({ length: LEVELS }, () => []);
@@ -133,7 +146,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
           if (line < 1 || line > e.document.lineCount) continue;
           const v = r[metric];
           const share = v / total;
-          if (share < 0.002) continue;
+          if (share < MIN_HEAT_SHARE) continue;
           const level = Math.min(LEVELS - 1, Math.floor(Math.sqrt(v / max) * LEVELS));
           const range = e.document.lineAt(line - 1).range;
           const hover = new vscode.MarkdownString(
@@ -143,7 +156,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
               `| self | ${r.self} | ${fmtPct(r.self, total)} | ${fmtMs(r.self * msPerSample)} |`,
           );
           buckets[level].push({ range, hoverMessage: hover });
-          if (share >= 0.005) {
+          if (share >= MIN_LABEL_SHARE) {
             inline.push({
               range,
               renderOptions: {
@@ -163,12 +176,14 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
   // ------------------------------------------------------------ CodeLens
   provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
     const s = this.sessions.active;
-    if (!s || !this.enabled || !vscode.workspace.getConfiguration('pyprof').get('codeLens.enabled', true)) return [];
+    if (!s || !this.enabled || !settings.codeLensEnabled()) return [];
     const { counts, total } = this.compute(s);
     if (!total) return [];
     const file = normalize(doc.uri.fsPath);
-    const msPerSample = 1000 / Number((s.model.meta.options as any)?.rateHz ?? 1000);
-    const stats = s.model.topFunctions(counts).filter((st) => normalize(s.model.fns[st.fn].file) === file && st.total / total >= 0.005);
+    const msPerSample = s.model.sampleIntervalMs;
+    const stats = s.model
+      .topFunctions(counts)
+      .filter((st) => normalize(s.model.fns[st.fn].file) === file && st.total / total >= MIN_LABEL_SHARE);
     const lenses: vscode.CodeLens[] = [];
     for (const st of stats) {
       const fn = s.model.fns[st.fn];
@@ -188,9 +203,9 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
 
   dispose(): void {
     clearInterval(this.interval);
-    this.decorations.forEach((d) => d.dispose());
+    for (const d of this.decorations) d.dispose();
     this.inline.dispose();
-    this.disposables.forEach((d) => d.dispose());
+    for (const d of this.disposables) d.dispose();
   }
 }
 
@@ -210,8 +225,8 @@ function lookupFile<T>(heat: Map<string, T>, file: string): T | undefined {
 /** CPython 3.15 reports qualnames (Class.method); find the `def` line at/above the first sampled line. */
 function findDefLine(doc: vscode.TextDocument, qualname: string, minLine: number): number | undefined {
   if (qualname === '<module>' || qualname.startsWith('<')) return undefined;
-  const name = qualname.split('.').pop()!;
-  const re = new RegExp(`^\\s*(?:async\\s+)?def\\s+${name.replace(/[$^\\]/g, '\\$&')}\\s*[\\(\\[]`);
+  const name = qualname.slice(qualname.lastIndexOf('.') + 1);
+  const re = new RegExp(`^\\s*(?:async\\s+)?def\\s+${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[\\(\\[]`);
   const start = Math.min(doc.lineCount - 1, Math.max(0, (minLine || 1) - 1));
   for (let i = start; i >= 0 && i >= start - 2000; i--) {
     if (re.test(doc.lineAt(i).text)) return i;

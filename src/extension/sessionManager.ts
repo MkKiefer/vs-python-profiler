@@ -1,0 +1,344 @@
+/**
+ * Owns all sessions and the three ways a live one starts. Every live path ends
+ * in the same place – a collector process running with the *target's* interpreter:
+ *
+ *   launch   : collector first → terminal runs our launcher with PYPROF_AGENT
+ *              → launcher's agent says hello (pid) → collector starts sampling
+ *   terminal : `pyprof run …` → hub hello → collector → reply agent address → same as launch
+ *   attach   : collector → attach(pid) → optional sys.remote_exec agent injection
+ */
+import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { CollectorClient } from './collectorClient';
+import type { PythonInfo } from './environment';
+import { ExtPaths, LAUNCHER_BOOT } from './paths';
+import { PROFILE_EXTENSION, profileFileStem, readProfile, writeProfile } from './profileFile';
+import { Session } from './session';
+import { settings } from './settings';
+import { errorMessage } from '../shared/errors';
+import type { AttachOptions, CollectorOptions, InitializeResult, TerminalHello } from '../shared/protocol';
+
+export interface LaunchSpec {
+  python: PythonInfo;
+  kind: 'path' | 'module';
+  target: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  label: string;
+  options?: CollectorOptions;
+}
+
+export interface SavedProfile {
+  file: string;
+  mtime: number;
+  size: number;
+}
+
+const STARTUP_TIMEOUT_MS = 20_000;
+const LIVE_CONTEXT_KEY = 'pyprof.hasLiveSession';
+
+export class SessionManager implements vscode.Disposable {
+  private readonly all: Session[] = [];
+  private activeSession: Session | undefined;
+  private readonly finalizing = new Set<Session>();
+  private readonly startupTimers = new Map<Session, NodeJS.Timeout>();
+
+  private readonly changed = new vscode.EventEmitter<void>();
+  /** a session was added, removed or changed state */
+  readonly onDidChange = this.changed.event;
+  private readonly activeChanged = new vscode.EventEmitter<Session | undefined>();
+  readonly onDidChangeActive = this.activeChanged.event;
+  private readonly started = new vscode.EventEmitter<Session>();
+  /** a live session is set up and waiting for (or already receiving) samples */
+  readonly onDidStart = this.started.event;
+
+  constructor(
+    private readonly paths: ExtPaths,
+    private readonly log: vscode.LogOutputChannel,
+    private readonly storageDir: string,
+  ) {
+    fs.mkdirSync(this.storageDir, { recursive: true });
+    this.refreshContext();
+  }
+
+  /** newest first */
+  get sessions(): readonly Session[] {
+    return this.all;
+  }
+
+  get active(): Session | undefined {
+    return this.activeSession;
+  }
+
+  find(id: string): Session | undefined {
+    return this.all.find((s) => s.id === id);
+  }
+
+  setActive(session: Session | undefined): void {
+    if (this.activeSession === session) return;
+    this.activeSession = session;
+    this.activeChanged.fire(session);
+  }
+
+  // ------------------------------------------------------------- starting
+  /** "Run with Profiler": real terminal (TTY, stdin, colors) running our launcher. */
+  async launch(spec: LaunchSpec): Promise<Session> {
+    const session = this.add(new Session(spec.label, 'launch', spec.python));
+    const options: CollectorOptions = { ...spec.options, stripLauncher: true };
+    await this.guardStartup(session, async () => {
+      const { info } = await this.startCollector(session, spec.python.executable, options);
+      session.setState('waiting');
+      session.terminal = vscode.window.createTerminal({
+        name: `Profile: ${spec.label}`,
+        shellPath: spec.python.executable,
+        shellArgs: [
+          '-c', LAUNCHER_BOOT, this.paths.python, 'run',
+          ...(spec.kind === 'module' ? ['-m', spec.target] : [spec.target]),
+          ...spec.args,
+        ],
+        cwd: spec.cwd,
+        env: {
+          ...spec.env,
+          PYPROF_AGENT: info.agentAddress,
+          PYPROF_OPTIONS: JSON.stringify(options),
+          PYTHONUNBUFFERED: spec.env?.PYTHONUNBUFFERED ?? '1',
+        },
+        iconPath: new vscode.ThemeIcon('flame'),
+        isTransient: true,
+      });
+      session.terminal.show(true);
+      this.watchStartup(session);
+    });
+    return session;
+  }
+
+  /** `pyprof run …` typed in a VS Code terminal. Returns what the launcher needs to connect. */
+  async fromTerminal(hello: TerminalHello): Promise<{ agent: string; options: CollectorOptions }> {
+    const [major, minor] = hello.version.split('.').map(Number);
+    const python: PythonInfo = {
+      executable: hello.executable,
+      version: hello.version,
+      major,
+      minor,
+      freeThreaded: false,
+      label: `Python ${hello.version}`,
+    };
+    const label = [path.basename(hello.target), ...hello.args].join(' ');
+    const session = this.add(new Session(label, 'terminal', python));
+    const options: CollectorOptions = { ...settings.collectorOptions(), stripLauncher: true };
+    const info = await this.guardStartup(session, async () => {
+      const collector = await this.startCollector(session, hello.executable, options);
+      session.setState('waiting');
+      this.watchStartup(session);
+      return collector.info;
+    });
+    return { agent: info.agentAddress, options };
+  }
+
+  async attach(pid: number, python: PythonInfo, label: string, overrides: AttachOptions = {}): Promise<Session> {
+    const session = this.add(new Session(label, 'attach', python));
+    session.pid = pid;
+    const { inject = true, ...options } = overrides;
+    await this.guardStartup(session, async () => {
+      const { client } = await this.startCollector(session, python.executable, settings.collectorOptions(undefined, options));
+      const result = await client.request('attach', { pid, inject }, 30_000);
+      session.pid = result.pid;
+      if (result.injectError) {
+        void vscode.window.showWarningMessage(
+          `Profiling PID ${pid} (CPU + asyncio tasks). The in-process agent could not be injected, so memory tracing ` +
+            `and asyncio debug are unavailable: ${result.injectError}`,
+        );
+      }
+      if (session.state === 'starting') session.setState('running');
+    });
+    return session;
+  }
+
+  private async startCollector(
+    session: Session,
+    python: string,
+    options: CollectorOptions,
+  ): Promise<{ client: CollectorClient; info: InitializeResult }> {
+    const client = new CollectorClient(python, this.paths.python, this.log);
+    session.attachClient(client);
+    client.start();
+    const info = await client.request('initialize', { options, label: session.label }, 30_000);
+    session.updateCapabilities({ tracemalloc: !!options.tracemalloc, asyncioDebug: !!options.asyncioDebug });
+    return { client, info };
+  }
+
+  /** Run a start-up sequence; on failure the session ends in the error state. */
+  private async guardStartup<T>(session: Session, start: () => Promise<T>): Promise<T> {
+    try {
+      const result = await start();
+      this.started.fire(session);
+      return result;
+    } catch (e) {
+      session.setState('error', errorMessage(e));
+      await session.client?.shutdown();
+      throw e;
+    }
+  }
+
+  /** The launched program must connect back in time; otherwise explain instead of waiting forever. */
+  private watchStartup(session: Session): void {
+    const timer = setTimeout(() => {
+      this.startupTimers.delete(session);
+      if (session.state !== 'waiting') return;
+      session.setState('error', 'The program did not connect to the profiler. Check its terminal for errors.');
+      void vscode.window.showErrorMessage(
+        `Python Profiler: "${session.label}" did not start profiling within ${STARTUP_TIMEOUT_MS / 1000}s. Check the terminal output.`,
+      );
+      void session.client?.shutdown();
+    }, STARTUP_TIMEOUT_MS);
+    this.startupTimers.set(session, timer);
+  }
+
+  // ------------------------------------------------------------- stopping
+  async stop(session: Session, terminate = false): Promise<void> {
+    try {
+      await session.client?.request('stop', { reason: 'user' }, 10_000);
+    } catch (e) {
+      this.log.warn(`stop failed: ${errorMessage(e)}`);
+    }
+    if (terminate) this.terminateTarget(session);
+    if (session.live) session.setState('stopped');
+  }
+
+  private terminateTarget(session: Session): void {
+    if (session.terminal) {
+      session.terminal.dispose();
+    } else if (session.pid) {
+      try {
+        process.kill(session.pid);
+      } catch (e) {
+        void vscode.window.showWarningMessage(`Could not terminate PID ${session.pid}: ${errorMessage(e)}`);
+      }
+    }
+  }
+
+  /** Remove a session from the list (stopping it first). Its saved profile, if any, stays on disk. */
+  async remove(session: Session): Promise<void> {
+    if (session.live) await this.stop(session);
+    await this.finalize(session);
+    this.forget(session);
+  }
+
+  /** Auto-save and shut down the collector once a session has ended. */
+  private async finalize(session: Session): Promise<void> {
+    const client = session.client;
+    if (!client || this.finalizing.has(session)) return;
+    this.finalizing.add(session);
+    try {
+      if (settings.autoSave() && session.model.stats.samples > 0 && !session.filePath) {
+        const stamp = new Date(session.startedAt).toISOString().replace(/[:.]/g, '-');
+        const file = path.join(this.storageDir, `${stamp}_${profileFileStem(session.label)}.${PROFILE_EXTENSION}`);
+        await client.request('save', { path: file }, 60_000);
+        session.filePath = file;
+      }
+    } catch (e) {
+      this.log.warn(`auto-save failed: ${errorMessage(e)}`);
+    } finally {
+      await client.shutdown();
+      this.finalizing.delete(session);
+      this.changed.fire();
+    }
+  }
+
+  // ---------------------------------------------------------------- files
+  async saveAs(session: Session, target: string): Promise<void> {
+    const client = session.client;
+    if (client) await client.request('save', { path: target }, 60_000);
+    else await writeProfile(target, session.model.toDelta());
+  }
+
+  /** Auto-saved profiles that are not open as a session, newest first. */
+  savedProfiles(): SavedProfile[] {
+    const open = new Set(this.all.map((s) => s.filePath));
+    try {
+      return fs
+        .readdirSync(this.storageDir)
+        .filter((name) => name.endsWith(`.${PROFILE_EXTENSION}`))
+        .map((name) => path.join(this.storageDir, name))
+        .filter((file) => !open.has(file))
+        .map((file) => {
+          const stat = fs.statSync(file);
+          return { file, mtime: stat.mtimeMs, size: stat.size };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+    } catch (e) {
+      this.log.warn(`cannot list saved profiles: ${errorMessage(e)}`);
+      return [];
+    }
+  }
+
+  async openFile(file: string): Promise<Session> {
+    const existing = this.all.find((s) => s.filePath === file && s.kind === 'file');
+    if (existing) {
+      this.setActive(existing);
+      return existing;
+    }
+    const data = await readProfile(file);
+    const label = data.meta?.label ?? path.basename(file, `.${PROFILE_EXTENSION}`);
+    return this.add(Session.fromFile(label, file, data));
+  }
+
+  /** Delete a saved profile from disk and close any session showing it. */
+  deleteSaved(file: string): void {
+    fs.rmSync(file, { force: true });
+    for (const session of this.all.filter((s) => s.filePath === file)) {
+      if (session.kind === 'file') this.forget(session);
+      else session.filePath = undefined;
+    }
+    this.changed.fire();
+  }
+
+  // ------------------------------------------------------------ internals
+  private add(session: Session): Session {
+    this.all.unshift(session);
+    session.onDidChange(() => {
+      if (session.state !== 'waiting') this.clearStartupTimer(session);
+      this.refreshContext();
+      this.changed.fire();
+      if (session.state === 'exited' || session.state === 'stopped') void this.finalize(session);
+    });
+    this.setActive(session);
+    this.refreshContext();
+    this.changed.fire();
+    return session;
+  }
+
+  private forget(session: Session): void {
+    const index = this.all.indexOf(session);
+    if (index < 0) return;
+    this.all.splice(index, 1);
+    this.clearStartupTimer(session);
+    if (this.activeSession === session) this.setActive(this.all[0]);
+    session.dispose();
+    this.refreshContext();
+    this.changed.fire();
+  }
+
+  private clearStartupTimer(session: Session): void {
+    const timer = this.startupTimers.get(session);
+    if (timer) clearTimeout(timer);
+    this.startupTimers.delete(session);
+  }
+
+  private refreshContext(): void {
+    void vscode.commands.executeCommand('setContext', LIVE_CONTEXT_KEY, this.all.some((s) => s.live));
+  }
+
+  dispose(): void {
+    for (const timer of this.startupTimers.values()) clearTimeout(timer);
+    for (const session of this.all) {
+      void session.client?.shutdown();
+      session.dispose();
+    }
+    this.changed.dispose();
+    this.activeChanged.dispose();
+    this.started.dispose();
+  }
+}

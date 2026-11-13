@@ -4,7 +4,7 @@ import type { App, Tab } from '../app';
 import { TimeSeriesChart } from '../components/timeseries';
 import { chartColor, frameColor } from '../components/colors';
 import { Cat, STATUS_GIL_REQUESTED, STATUS_HAS_GIL } from '../../shared/model';
-import { fmtBytes, fmtCount, fmtMs, fmtPct, shortPath } from '../../shared/format';
+import { fmtBytes, fmtCount, fmtMs, fmtPct, maxOf, mean, shortPath } from '../../shared/format';
 
 interface Insight {
   sev: 'bad' | 'warn' | 'info';
@@ -61,16 +61,17 @@ export class OverviewTab implements Tab {
 
     // tiles
     const cpu = m.tracks.get('cpu');
-    const avgCpu = cpu?.v.length ? cpu.v.reduce((a, b) => a + b, 0) / cpu.v.length : undefined;
+    const avgCpu = cpu ? mean(cpu.v) : undefined;
+    const peakCpu = cpu ? maxOf(cpu.v) : undefined;
     const rss = m.tracks.get('rss');
     const lag = m.tracks.get('loopLag');
-    const maxLag = lag?.v.length ? Math.max(...lag.v) : undefined;
+    const maxLag = lag ? maxOf(lag.v) : undefined;
     const gcPause = m.gc.reduce((a, g) => a + g[1], 0);
     this.tiles.replaceChildren(
-      tile('Duration', fmtMs(m.duration), app.live ? 'live' : ''),
+      tile('Duration', fmtMs(m.duration), app.caps.live ? 'live' : ''),
       tile('Samples', fmtCount(m.stats.samples), `${m.stats.rateHz ? m.stats.rateHz.toFixed(0) + ' Hz' : ''}${m.stats.errors ? ` · ${fmtPct(m.stats.errors, m.stats.samples + m.stats.errors, 0)} discarded` : ''}`),
-      tile('CPU avg', avgCpu !== undefined ? `${avgCpu.toFixed(0)}%` : '–', cpu?.v.length ? `peak ${Math.max(...cpu.v).toFixed(0)}%` : ''),
-      tile('Peak RSS', rss?.v.length ? fmtBytes(Math.max(...rss.v)) : '–', rss?.v.length ? `now ${fmtBytes(rss.v.at(-1))}` : ''),
+      tile('CPU avg', avgCpu !== undefined ? `${avgCpu.toFixed(0)}%` : '–', peakCpu !== undefined ? `peak ${peakCpu.toFixed(0)}%` : ''),
+      tile('Peak RSS', fmtBytes(rss ? maxOf(rss.v) : undefined), rss?.v.length ? `now ${fmtBytes(rss.v.at(-1))}` : ''),
       tile('Max loop lag', fmtMs(maxLag), lag ? '' : 'no asyncio loop seen', maxLag !== undefined && maxLag > 100 ? 'bad' : ''),
       tile('GC pauses', fmtMs(gcPause), `${m.gc.length} collections`),
       tile('Threads', String(m.threadList().length)),
@@ -106,7 +107,7 @@ export class OverviewTab implements Tab {
               );
             })),
           )
-        : h('div', { class: 'empty' }, app.live ? 'Collecting samples…' : 'No samples'),
+        : h('div', { class: 'empty' }, app.caps.live ? 'Collecting samples…' : 'No samples'),
     );
 
     // allocators
@@ -143,7 +144,7 @@ export class OverviewTab implements Tab {
         ? ins.map((i) =>
             h('li', null, h('span', { class: `sev ${i.sev}` }, i.sev === 'bad' ? '●' : i.sev === 'warn' ? '▲' : 'ℹ'), h('span', null, i.text, ' ', i.action ? h('a', { onclick: i.action[1] }, i.action[0]) : null)),
           )
-        : [h('li', null, h('span', { class: 'sev info' }, 'ℹ'), app.live ? 'Collecting data… insights appear as patterns emerge.' : 'Nothing unusual detected.')]),
+        : [h('li', null, h('span', { class: 'sev info' }, 'ℹ'), app.caps.live ? 'Collecting data… insights appear as patterns emerge.' : 'Nothing unusual detected.')]),
     );
   }
 
@@ -178,8 +179,8 @@ export class OverviewTab implements Tab {
     const rss = m.tracks.get('rss');
     if (rss && rss.v.length >= 8) {
       const n = rss.v.length;
-      const first = avg(rss.v.slice(0, Math.max(3, n / 10)));
-      const last = avg(rss.v.slice(-Math.max(3, n / 10)));
+      const first = mean(rss.v.slice(0, Math.max(3, n / 10))) ?? 0;
+      const last = mean(rss.v.slice(-Math.max(3, n / 10))) ?? 0;
       const rising = monotonicShare(rss.v);
       if (last > first * 1.3 && last - first > 20 * 1024 * 1024 && rising > 0.6) {
         out.push({
@@ -194,7 +195,7 @@ export class OverviewTab implements Tab {
     if (lag && lag.v.length) {
       const blocked = lag.v.filter((v) => v > 100).length;
       if (blocked) {
-        out.push({ sev: 'bad', text: `The event loop was blocked for more than 100 ms ${blocked} time${blocked > 1 ? 's' : ''} (max ${fmtMs(Math.max(...lag.v))}). Something synchronous runs inside a coroutine.`, action: ['Investigate', goto('async')] });
+        out.push({ sev: 'bad', text: `The event loop was blocked for more than 100 ms ${blocked} time${blocked > 1 ? 's' : ''} (max ${fmtMs(maxOf(lag.v))}). Something synchronous runs inside a coroutine.`, action: ['Investigate', goto('async')] });
       }
     }
     const never = m.events.filter((e) => e.kind === 'never-awaited').length;
@@ -215,10 +216,6 @@ export class OverviewTab implements Tab {
     }
     return out;
   }
-}
-
-function avg(v: number[]): number {
-  return v.reduce((a, b) => a + b, 0) / Math.max(1, v.length);
 }
 
 function monotonicShare(v: number[]): number {
