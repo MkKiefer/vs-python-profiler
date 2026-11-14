@@ -14,7 +14,6 @@ has: it must import on Python 3.10+ (to report a clear version error) and keeps
 imports it rarely needs out of the module top level.
 """
 
-import json
 import os
 import runpy
 import sys
@@ -58,6 +57,16 @@ class Target:
         return cls(TargetKind.PATH, argv[0], argv[1:])
 
 
+@dataclass(frozen=True)
+class AgentEndpoint:
+    """How the agent of this program reaches its collector; the agent parses both fields."""
+
+    address: str
+    """``host:port:token``"""
+    options_json: str | None
+    """The session options as JSON text, if the extension passed any."""
+
+
 class Launcher:
     EXIT_ERROR = 2
     _AGENT_CONNECT_TIMEOUT = 3.0
@@ -74,8 +83,7 @@ class Launcher:
         self._check_version()
         target = Target.parse(argv)
         self._allow_ptrace()
-        agent_address, options = self._agent_endpoint()
-        self._start_agent(agent_address, options)
+        self._start_agent(self._agent_endpoint())
         self._restore_sys_path()
         sys.argv = [target.name, *target.args]
         if target.kind is TargetKind.MODULE:
@@ -86,7 +94,6 @@ class Launcher:
             sys.path.insert(0, os.path.dirname(path))
             runpy.run_path(path, run_name="__main__")
 
-    # --------------------------------------------------------------- helpers
     @staticmethod
     def _check_version() -> None:
         if sys.version_info >= MIN_PYTHON:
@@ -113,24 +120,23 @@ class Launcher:
             pass  # no Yama / no prctl: attaching either works anyway or reports its own error
 
     @staticmethod
-    def _agent_endpoint() -> tuple[str, dict[str, object]]:
-        """Where the agent connects to, and its options; popped so child processes are not auto-profiled."""
-        agent_address = os.environ.pop("PYPROF_AGENT", None)
-        raw_options = os.environ.pop("PYPROF_OPTIONS", None)
-        if not agent_address:
-            raise LauncherError("PYPROF_AGENT is not set; start the program with the profiler from VS Code")
-        try:
-            decoded = json.loads(raw_options) if raw_options else None
-        except ValueError:
-            decoded = None
-        return agent_address, decoded if isinstance(decoded, dict) else {}
+    def _agent_endpoint() -> AgentEndpoint:
+        """Read what the extension passed in the environment.
 
-    def _start_agent(self, agent_address: str, options: dict[str, object]) -> None:
+        The variables are removed so that child processes of the program are not profiled as well.
+        """
+        address = os.environ.pop("PYPROF_AGENT", None)
+        options_json = os.environ.pop("PYPROF_OPTIONS", None)
+        if not address:
+            raise LauncherError("PYPROF_AGENT is not set; start the program with the profiler from VS Code")
+        return AgentEndpoint(address, options_json)
+
+    def _start_agent(self, endpoint: AgentEndpoint) -> None:
         # Imported only after the version check: the agent needs Python 3.15.
         from _vscode_pyprof.target import agent
 
         try:
-            started = agent.start(agent_address, options)
+            started = agent.start(endpoint.address, endpoint.options_json)
         except ValueError as error:  # a malformed PYPROF_AGENT
             raise LauncherError(str(error)) from None
         # Give the agent a moment to connect so the collector starts sampling

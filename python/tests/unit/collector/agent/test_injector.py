@@ -1,8 +1,10 @@
 import os
+import re
 import sys
 import unittest
 from unittest import mock
 
+from _vscode_pyprof.agent_protocol.options import AgentOptions
 from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
 
 
@@ -21,10 +23,12 @@ class TestAgentInjector(unittest.TestCase):
 
     def test_inject_runs_script_that_starts_agent_with_address_and_options(self) -> None:
         with mock.patch.object(sys, "remote_exec", side_effect=self.record_script):
-            self.injector.inject(4242, "127.0.0.1:5123:abc", {"tracemalloc": True})
+            self.injector.inject(4242, "127.0.0.1:5123:abc", AgentOptions(tracemalloc=True))
 
         compile(self.script_sources[0], self.scripts[0], "exec")
-        self.assertIn("agent.start('127.0.0.1:5123:abc', {'tracemalloc': True})", self.script_sources[0])
+        start_call = re.search(r"agent\.start\('127\.0\.0\.1:5123:abc', '(.*)'\)", self.script_sources[0])
+        assert start_call is not None
+        self.assertEqual(AgentOptions.from_json(start_call.group(1)), AgentOptions(tracemalloc=True))
 
     def test_inject_when_remote_exec_fails_raises_injection_error_and_removes_script(self) -> None:
         def fail(pid: int, path: str) -> None:
@@ -32,14 +36,14 @@ class TestAgentInjector(unittest.TestCase):
             raise RuntimeError("Remote debugging is disabled")
 
         with mock.patch.object(sys, "remote_exec", side_effect=fail), self.assertRaises(AgentInjectionError) as ctx:
-            self.injector.inject(4242, "127.0.0.1:5123:abc", {})
+            self.injector.inject(4242, "127.0.0.1:5123:abc", AgentOptions())
 
         self.assertIn("PYTHON_DISABLE_REMOTE_DEBUG", str(ctx.exception))
         self.assertFalse(os.path.exists(self.scripts[0]))
 
     def test_cleanup_deletes_script(self) -> None:
         with mock.patch.object(sys, "remote_exec", side_effect=self.record_script):
-            self.injector.inject(4242, "127.0.0.1:5123:abc", {})
+            self.injector.inject(4242, "127.0.0.1:5123:abc", AgentOptions())
 
         self.injector.cleanup()
 

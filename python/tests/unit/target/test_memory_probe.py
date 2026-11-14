@@ -1,8 +1,8 @@
 import tracemalloc
 import unittest
 
+from _vscode_pyprof.agent_protocol.replies import TracingStatus
 from _vscode_pyprof.target.memory_probe import MemoryProbe
-from _vscode_pyprof.wire import WireReader
 
 
 @unittest.skipIf(tracemalloc.is_tracing(), "the test run itself is traced")
@@ -12,25 +12,25 @@ class TestMemoryProbe(unittest.TestCase):
         self.addCleanup(tracemalloc.stop)
 
     def test_start_tracing_starts_tracemalloc_with_requested_frames(self) -> None:
-        result = WireReader(self.probe.start_tracing(5))
+        status = self.probe.start_tracing(5)
 
         self.assertTrue(tracemalloc.is_tracing())
-        self.assertEqual((result.get_bool("tracing", False), result.get_int("frames")), (True, 5))
+        self.assertEqual(status, TracingStatus(tracing=True, frames=5))
 
     def test_start_tracing_when_program_already_traces_keeps_its_settings(self) -> None:
         tracemalloc.start(3)
 
-        result = WireReader(self.probe.start_tracing(9))
+        status = self.probe.start_tracing(9)
 
-        self.assertEqual(result.get_int("frames"), 3)
+        self.assertEqual(status.frames, 3)
 
     def test_stop_tracing_stops_tracemalloc(self) -> None:
         self.probe.start_tracing(5)
 
-        result = WireReader(self.probe.stop_tracing())
+        status = self.probe.stop_tracing()
 
         self.assertFalse(tracemalloc.is_tracing())
-        self.assertFalse(result.get_bool("tracing", True))
+        self.assertEqual(status, TracingStatus(tracing=False))
 
     def test_release_stops_tracing_the_probe_started(self) -> None:
         self.probe.start_tracing(5)
@@ -57,9 +57,8 @@ class TestMemoryProbe(unittest.TestCase):
         traced = self.probe.traced_memory()
 
         assert traced is not None
-        current, peak = traced
-        self.assertGreaterEqual(current, len(block))
-        self.assertGreaterEqual(peak, current)
+        self.assertGreaterEqual(traced.current, len(block))
+        self.assertGreaterEqual(traced.peak, traced.current)
 
     def test_snapshot_without_tracing_raises_runtime_error(self) -> None:
         with self.assertRaises(RuntimeError) as ctx:
@@ -71,28 +70,28 @@ class TestMemoryProbe(unittest.TestCase):
         self.probe.start_tracing(5)
         block = bytearray(512 * 1024)
 
-        snapshot = WireReader(self.probe.snapshot(50))
+        snapshot = self.probe.snapshot(50)
 
-        tracebacks = [entry[0] for entry in snapshot.get_list("top") if isinstance(entry, list)]
-        files = {frame[0] for traceback in tracebacks for frame in traceback}
+        files = {frame.filename for allocation in snapshot.top for frame in allocation.traceback}
         self.assertIn(__file__, files)
-        self.assertGreaterEqual(snapshot.get_int("totalSize"), len(block))
+        self.assertGreaterEqual(snapshot.total_size, len(block))
 
     def test_snapshot_with_limit_sums_the_rest_as_other(self) -> None:
         self.probe.start_tracing(5)
         small = bytearray(1024)  # two lines, so two tracebacks
         large = bytearray(4096)
 
-        snapshot = WireReader(self.probe.snapshot(1))
+        snapshot = self.probe.snapshot(1)
 
-        self.assertEqual(len(snapshot.get_list("top")), 1)
-        self.assertGreater(snapshot.get_int("otherSize"), 0)
+        self.assertEqual(len(snapshot.top), 1)
+        self.assertGreater(snapshot.other_size, 0)
+        self.assertEqual(snapshot.total_size, snapshot.top[0].size + snapshot.other_size)
         self.assertLess(len(small), len(large))
 
     def test_object_counts_returns_most_common_types_first(self) -> None:
-        counts = WireReader(self.probe.object_counts(5)).get_list("counts")
+        counts = self.probe.object_counts(5).counts
 
-        numbers = [entry[1] for entry in counts if isinstance(entry, (list, tuple))]
+        numbers = [entry.count for entry in counts]
         self.assertEqual(len(counts), 5)
         self.assertEqual(numbers, sorted(numbers, reverse=True))
 

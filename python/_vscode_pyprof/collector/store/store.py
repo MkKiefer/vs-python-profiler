@@ -7,31 +7,35 @@ one clock (milliseconds since session start, ``SessionClock``):
 * stacks   - prefix tree ``[parent_stack, frame]``                (``StackTable``)
 * samples  - columnar ``t / tid / stack / status`` (thread stacks) (``SampleColumns``)
 * async    - same layout, stacks reconstructed per asyncio task
-* tracks   - named time series ``[[t, value], ...]``
+* tracks   - named time series ``[[t, value], ...]``              (``Track``)
 * tasks, task_events                                               (``TaskTable``)
-* gc, markers, snapshots, events
+* gc, markers, snapshots, events, object counts
 
 The store hands out *deltas* (everything appended since the last call) so the
 extension can stream live data cheaply, and ``full()`` returns the same shape
 for saving ``.pyprof`` files. The TypeScript ``ProfileModel`` consumes both.
 """
 
-import sys
-import sysconfig
 import threading
-import time
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 
 # annotations only (never evaluated at runtime): the store imports without the private Tachyon module
-lazy from _remote_debugging import AwaitedInfo, FrameInfo, InterpreterInfo
+lazy from _remote_debugging import AwaitedInfo, InterpreterInfo
 
+from _vscode_pyprof.agent_protocol.metrics import EventDetails
+from _vscode_pyprof.agent_protocol.replies import ObjectCounts
+from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.collector.store.append_log import AppendLog
+from _vscode_pyprof.collector.store.async_stack import AsyncStack
 from _vscode_pyprof.collector.store.memory_snapshot import MemorySnapshot
+from _vscode_pyprof.collector.store.profile_meta import ProfileMeta
 from _vscode_pyprof.collector.store.sample_columns import SampleColumns
 from _vscode_pyprof.collector.store.sampling_stats import SamplingStats
 from _vscode_pyprof.collector.store.session_clock import SessionClock
-from _vscode_pyprof.collector.store.stack_table import FrameKey, StackTable
+from _vscode_pyprof.collector.store.stack_table import SourceFrame, StackTable
 from _vscode_pyprof.collector.store.task_table import TaskObservation, TaskState, TaskTable
+from _vscode_pyprof.collector.store.timeline_event import TimelineEvent
 from _vscode_pyprof.collector.store.track import Track
 from _vscode_pyprof.wire import JsonObject
 
@@ -40,7 +44,8 @@ class Store:
     """Thread-safe facade over the tables of one profile.
 
     The sampler thread, the agent reader and the RPC handlers all record into
-    it; one lock guards every table.
+    it; one lock guards every table. ``delta()`` and ``full()`` are where the
+    tables become JSON.
     """
 
     FORMAT = "pyprof"
@@ -54,38 +59,41 @@ class Store:
 
         self._samples = SampleColumns()
         self._async_samples = SampleColumns()
-        self._tracks: dict[Track, AppendLog[list[float]]] = {}
-        self._gc: AppendLog[list[float]] = AppendLog()
-        self._markers: AppendLog[list[float | str]] = AppendLog()
-        self._events: AppendLog[JsonObject] = AppendLog()
+        self._tracks: dict[Track, AppendLog[list[float]]] = {}  # rows are [t, value]
+        self._gc: AppendLog[list[float]] = AppendLog()  # rows are [t, duration ms, generation, collected, heap size]
+        self._markers: AppendLog[list[float | str]] = AppendLog()  # rows are [t, name]
+        self._events: AppendLog[TimelineEvent] = AppendLog()
         self._tasks = TaskTable()
         self._snapshots: AppendLog[MemorySnapshot] = AppendLog()
-        self._object_counts: AppendLog[JsonObject] = AppendLog()
+        self._object_counts: AppendLog[ObjectCounts] = AppendLog()
         self._threads: dict[int, str] = {}
         self._renamed_threads: set[int] = set()
-        self._meta: JsonObject = {
-            "python": sys.version.split()[0],
-            "implementation": sys.implementation.name,
-            "freeThreaded": bool(sysconfig.get_config_var("Py_GIL_DISABLED")),
-            "platform": sys.platform,
-            "startedAt": time.time(),
-        }
+        self._meta = ProfileMeta.for_running_interpreter()
         self._meta_changed = True
         self._sample_count = 0
         self._error_count = 0
         self._rate_hz = 0.0
 
-    # ---- configuration
-    def configure(self, *, strip_launcher: bool) -> None:
-        """``strip_launcher`` drops the launcher/runpy bootstrap frames at the root of every stack."""
+    # ---- session facts
+    def describe_session(self, options: CollectorOptions, label: str | None) -> None:
+        """Record the options the session runs with; ``strip_launcher`` takes effect for new stacks."""
         with self._lock:
-            self._stacks.strip_launcher(strip_launcher)
+            self._stacks.strip_launcher(options.strip_launcher)
+            self._change_meta(replace(self._meta, options=options, label=label))
 
-    def set_meta(self, **values: object) -> None:
-        """Add facts about the session (pid, options, argv, …) to the profile's ``meta`` object."""
+    def set_target(self, pid: int) -> None:
+        """Record which process is sampled."""
         with self._lock:
-            self._meta.update(values)
-            self._meta_changed = True
+            self._change_meta(replace(self._meta, pid=pid))
+
+    def set_agent_process(self, executable: str | None, argv: list[str], cwd: str | None) -> None:
+        """Record what the connected agent reports about its process."""
+        with self._lock:
+            self._change_meta(replace(self._meta, agent=True, executable=executable, argv=argv, cwd=cwd))
+
+    def _change_meta(self, meta: ProfileMeta) -> None:
+        self._meta = meta
+        self._meta_changed = True
 
     # ---- samples
     def add_thread_sample(self, t: float, interpreters: Iterable[InterpreterInfo]) -> None:
@@ -96,19 +104,19 @@ class Store:
                 for thread in interpreter.threads:
                     if not thread.frame_info:
                         continue
-                    stack, internal = self._stacks.intern_sampled(thread.frame_info, strip=True)
-                    if not internal:  # the profiler's own threads are left out
-                        self._samples.append(t, thread.thread_id, stack, thread.status)
+                    stack = self._stacks.intern_sampled(thread.frame_info, strip=True)
+                    if not stack.internal:  # the profiler's own threads are left out
+                        self._samples.append(t, thread.thread_id, stack.stack_id, thread.status)
             self._sample_count += 1
 
-    def add_async_sample(self, t: float, linear_stacks: Iterable[tuple[Sequence[FrameInfo], int, int]]) -> None:
-        """Record async-aware stacks: ``(frames leaf first, thread id, leaf task id)`` per leaf task."""
+    def add_async_sample(self, t: float, stacks: Iterable[AsyncStack]) -> None:
+        """Record the async-aware stacks of one tick, one per running leaf task."""
         t = round(t, 3)
         with self._lock:
-            for frames, thread_id, _leaf_task in linear_stacks:
-                stack, internal = self._stacks.intern_sampled(frames, strip=False)
-                if not internal:
-                    self._async_samples.append(t, thread_id, stack, 0)
+            for async_stack in stacks:
+                stack = self._stacks.intern_sampled(async_stack.frames_leaf_first, strip=False)
+                if not stack.internal:
+                    self._async_samples.append(t, async_stack.thread_id, stack.stack_id, 0)
 
     def record_error(self) -> None:
         """Count a discarded sample (torn read)."""
@@ -139,12 +147,13 @@ class Store:
         with self._lock:
             self._markers.append([self._rounded_time(t), name])
 
-    def add_event(self, kind: str, message: str, t: float | None = None, extra: JsonObject | None = None) -> None:
-        """Something worth showing on the timeline; ``extra`` carries kind-specific fields."""
+    def add_event(self, kind: str, message: str, t: float | None = None, details: EventDetails | None = None) -> None:
+        """Something worth showing on the timeline; ``t`` defaults to now.
+
+        ``kind`` is an ``EventKind`` value, or a kind only a newer agent knows.
+        """
         with self._lock:
-            event: JsonObject = dict(extra) if extra else {}
-            event.update(t=self._rounded_time(t), kind=kind, message=message)
-            self._events.append(event)
+            self._events.append(TimelineEvent(self._rounded_time(t), kind, message, details or EventDetails()))
 
     def set_thread_name(self, thread_id: int, name: str) -> None:
         with self._lock:
@@ -174,30 +183,30 @@ class Store:
                         name=task.task_name or f"Task-{task.task_id}",
                         parent=awaiter if isinstance(awaiter, int) else None,
                         thread=info.thread_id,
-                        stack=self._stacks.intern_sampled(frames, strip=False)[0] if frames else self.NO_STACK,
+                        stack=self._stacks.intern_sampled(frames, strip=False).stack_id,
                         state=TaskState.RUNNING if task.task_id in running_ids else TaskState.WAITING,
                     )
                 )
         return observations
 
     # ---- memory
-    def intern_traceback(self, frames_root_first: Sequence[FrameKey]) -> int:
+    def intern_traceback(self, frames_root_first: Sequence[SourceFrame]) -> int:
         """Intern a stack recorded inside the target (tracemalloc), given root-first frames.
 
         Applies the same launcher stripping as sampled stacks so both kinds of
         stack share prefixes. Returns ``NO_STACK`` if nothing is left.
         """
         with self._lock:
-            return self._stacks.intern(frames_root_first, strip=True)
+            return self._stacks.intern(frames_root_first, strip=True).stack_id
 
     def add_snapshot(self, snapshot: MemorySnapshot) -> None:
         with self._lock:
             self._snapshots.append(snapshot)
 
-    def add_object_counts(self, t: float, counts: list[object]) -> None:
-        """``counts`` is the agent's ``[[type name, count], ...]``, passed through to the dashboard."""
+    def add_object_counts(self, counts: ObjectCounts) -> None:
+        """``counts.t`` is in session milliseconds."""
         with self._lock:
-            self._object_counts.append({"t": round(t, 2), "counts": counts})
+            self._object_counts.append(replace(counts, t=round(counts.t, 2)))
 
     # ---- reading
     def delta(self) -> JsonObject:
@@ -205,9 +214,10 @@ class Store:
         with self._lock:
             data = self._tables(new_only=True)
             data["threads"] = {str(thread_id): self._threads[thread_id] for thread_id in self._renamed_threads}
-            data["objectCounts"] = self._object_counts.rows(new_only=True)[-1:]  # only the latest is shown live
+            latest_counts = self._object_counts.rows(new_only=True)[-1:]  # only the latest is shown live
+            data["objectCounts"] = [counts.to_wire() for counts in latest_counts]
             if self._meta_changed:
-                data["meta"] = dict(self._meta)
+                data["meta"] = self._meta.to_wire()
             self._renamed_threads.clear()
             self._meta_changed = False
             return data
@@ -217,8 +227,8 @@ class Store:
         with self._lock:
             data = self._tables(new_only=False)
             data["threads"] = {str(thread_id): name for thread_id, name in self._threads.items()}
-            data["objectCounts"] = self._object_counts.rows(new_only=False)
-            data["meta"] = dict(self._meta)
+            data["objectCounts"] = [counts.to_wire() for counts in self._object_counts.rows(new_only=False)]
+            data["meta"] = self._meta.to_wire()
             data["format"] = self.FORMAT
             data["version"] = self.FORMAT_VERSION
             return data
@@ -238,7 +248,7 @@ class Store:
             "tracks": tracks,
             "gc": self._gc.rows(new_only=new_only),
             "markers": self._markers.rows(new_only=new_only),
-            "events": self._events.rows(new_only=new_only),
+            "events": [event.to_wire() for event in self._events.rows(new_only=new_only)],
             "tasks": [task.to_wire() for task in self._tasks.records(new_only=new_only)],
             "taskEvents": self._tasks.events.rows(new_only=new_only),
             "snapshots": [snapshot.to_wire() for snapshot in self._snapshots.rows(new_only=new_only)],

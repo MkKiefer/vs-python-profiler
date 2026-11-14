@@ -2,11 +2,11 @@
 
 from dataclasses import dataclass
 
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.wire import JsonObject, WireMessage
 
 
 @dataclass(frozen=True, slots=True)
-class SamplingStats:
+class SamplingStats(WireMessage):
     samples: int
     """Sampling ticks recorded."""
     errors: int

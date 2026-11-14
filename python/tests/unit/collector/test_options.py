@@ -1,5 +1,6 @@
 import unittest
 
+from _vscode_pyprof.agent_protocol.options import AgentOptions
 from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.wire import WireReader
 
@@ -42,10 +43,7 @@ class TestCollectorOptions(unittest.TestCase):
 
         agent_options = options.agent_options()
 
-        self.assertDictEqual(
-            agent_options,
-            {"tracemalloc": True, "tracemallocFrames": 8, "asyncioDebug": False, "slowCallbackMs": 100.0},
-        )
+        self.assertEqual(agent_options, AgentOptions(tracemalloc=True, tracemalloc_frames=8))
 
     def test_with_tracemalloc_returns_changed_copy(self) -> None:
         options = CollectorOptions()

@@ -6,7 +6,7 @@ import tempfile
 import threading
 
 from _vscode_pyprof import PACKAGE_DIR
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.agent_protocol.options import AgentOptions
 
 
 class AgentInjectionError(RuntimeError):
@@ -26,7 +26,7 @@ class AgentInjector:
     def is_supported() -> bool:
         return hasattr(sys, "remote_exec")
 
-    def inject(self, pid: int, agent_address: str, options: JsonObject) -> None:
+    def inject(self, pid: int, agent_address: str, options: AgentOptions) -> None:
         """Make process ``pid`` start an agent that connects to ``agent_address``.
 
         Returns as soon as the script is scheduled; the agent announces itself
@@ -58,7 +58,7 @@ class AgentInjector:
                 pass
 
     @staticmethod
-    def _write_script(agent_address: str, options: JsonObject) -> str:
+    def _write_script(agent_address: str, options: AgentOptions) -> str:
         package_parent = os.path.dirname(PACKAGE_DIR)
         # The package is put on sys.path only for the import, so it can never
         # shadow or leak into the user's own imports.
@@ -74,7 +74,7 @@ class AgentInjector:
             "    finally:\n"
             "        if added and p in sys.path:\n"
             "            sys.path.remove(p)\n"
-            f"    agent.start({agent_address!r}, {options!r})\n"
+            f"    agent.start({agent_address!r}, {options.to_json()!r})\n"
             "_pyprof_boot()\n"
             "del _pyprof_boot\n"
         )

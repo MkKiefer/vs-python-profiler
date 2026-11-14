@@ -3,14 +3,14 @@ import threading
 import time
 import unittest
 
+from _vscode_pyprof.agent_protocol.metrics import AgentEvent
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
 from _vscode_pyprof.target.loop_monitor import LoopMonitor
-from _vscode_pyprof.wire import JsonObject, WireReader
 
 
 class TestLoopMonitor(unittest.TestCase):
     def setUp(self) -> None:
-        self.events: list[JsonObject] = []
+        self.events: list[AgentEvent] = []
         self.monitor = LoopMonitor(AsyncioDebugCapture(self.events.append))
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, name="loop-thread", daemon=True)
@@ -37,11 +37,12 @@ class TestLoopMonitor(unittest.TestCase):
         self.monitor.probe(time.perf_counter())
         self.run_on_loop()
 
-        metrics = [WireReader(loop) for loop in self.monitor.take_metrics(time.perf_counter())]
+        metrics = self.monitor.take_metrics(time.perf_counter())
 
-        self.assertEqual([loop.get_str("thread") for loop in metrics], ["loop-thread"])
-        self.assertGreaterEqual(metrics[0].get_float("lagMs"), 0.0)
-        self.assertEqual(metrics[0].get_int("tasks"), 0)
+        self.assertEqual([loop.thread for loop in metrics], ["loop-thread"])
+        self.assertEqual(metrics[0].loop_id, id(self.loop))
+        self.assertGreaterEqual(metrics[0].lag_ms, 0.0)
+        self.assertEqual(metrics[0].tasks, 0)
 
     def test_take_metrics_with_unanswered_probe_reports_time_blocked_so_far(self) -> None:
         release = threading.Event()
@@ -50,9 +51,9 @@ class TestLoopMonitor(unittest.TestCase):
         sent = time.perf_counter()
         self.monitor.probe(sent)
 
-        metrics = WireReader(self.monitor.take_metrics(sent + 0.75)[0])
+        metrics = self.monitor.take_metrics(sent + 0.75)[0]
 
-        self.assertGreaterEqual(metrics.get_float("lagMs"), 750.0)
+        self.assertGreaterEqual(metrics.lag_ms, 750.0)
 
     def test_probe_forgets_loop_that_stopped(self) -> None:
         self.monitor.probe(time.perf_counter())

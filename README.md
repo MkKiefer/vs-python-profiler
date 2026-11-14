@@ -60,6 +60,7 @@ python/_vscode_pyprof/
  │ ├ cli.py            entry point and composition root
  │ ├ session.py        the RPC API (CollectorSession); ties sampler, agent link and store together
  │ ├ protocol.py       names of the RPC methods, notifications and session states (mirror of protocol.ts)
+ │ ├ rpc_results.py · notifications.py   what the collector answers and pushes, as dataclasses
  │ ├ rpc.py · options.py   JSON-lines RPC over stdio · session options
  │ ├ memory_snapshot_builder.py · profile_writer.py   agent snapshot reply → stored snapshot · .pyprof files
  │ ├ sampling/         sampler.py (fixed-rate loop: stacks, async stacks, task graph, children), gc_recorder.py,
@@ -67,17 +68,18 @@ python/_vscode_pyprof/
  │ │                   tachyon.py - the only module that touches _remote_debugging
  │ ├ store/            store.py (thread-safe facade → deltas / .pyprof) over stack_table.py (interned frames +
  │ │                   stack prefix tree), sample_columns.py, task_table.py, memory_snapshot.py, append_log.py,
- │ │                   session_clock.py, track.py, sampling_stats.py
+ │ │                   session_clock.py, track.py, sampling_stats.py, profile_meta.py, timeline_event.py, async_stack.py
  │ ├ frames/           frame_classifier.py (file → user / library / stdlib / internal),
  │ │                   func_resolver.py ((file, line) → function name)
  │ └ agent/            server.py (accepts the agent, token check), connection.py (requests, messages),
- │                     injector.py (sys.remote_exec), hello.py · metrics.py · thread_name.py (typed messages)
+ │                     injector.py (sys.remote_exec)
  │                       ▲ localhost TCP + token
  ├ target/             runs *inside the profiled program*; imports nothing from collector/
  │ ├ launcher.py       Run with Profiler: runs your program in *your* environment (runpy), starts the agent
  │ ├ agent.py          the agent thread: connects back, serves commands, reports metrics
  │ └ memory_probe.py · loop_monitor.py · asyncio_debug.py   tracemalloc + object counts · loop lag · debug events
- ├ agent_protocol.py   collector ⇄ agent contract: message types, commands, event kinds, address
+ ├ agent_protocol/     collector ⇄ agent contract, used by both ends: names.py (message types, commands,
+ │                     event kinds), address.py, options.py, hello.py, metrics.py, replies.py
  ├ wire.py             typed JSON access and JSON-lines framing, shared by collector/ and target/
  └ processes.py        standalone script (any Python): lists Python processes
 ```
@@ -92,7 +94,7 @@ python/_vscode_pyprof/
   boundary, through `wire.WireReader`.
 - **Two sides, kept apart.** `collector/` observes the program from outside;
   `target/` is everything that runs inside it, so it imports only `wire.py`,
-  `agent_protocol.py` and the package root (`tests/unit/target/test_isolation.py` fails if that changes).
+  `agent_protocol/` and the package root (`tests/unit/target/test_isolation.py` fails if that changes).
 - **Private API, isolated.** `_remote_debugging` is CPython-internal, so only
   `sampling/tachyon.py` touches it, with fallbacks for changed signatures. Its types are
   declared in `python/stubs/`.
@@ -170,8 +172,9 @@ the collector's own Python 3.15 process:
 | Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |
 | Module-level entry points | `collector.cli.main`, `target.launcher.main`, `target.agent.start` | Called by name from the extension's `python -c` bootstraps and from `sys.remote_exec`; they only delegate to a class. |
-| Plain class instead of a dataclass | `agent_protocol.AgentAddress`, `target/loop_monitor._LoopProbe` | They are loaded into the profiled program; `dataclasses` pulls in `inspect` and friends, which an attached program may not use itself. |
-| JSON objects as `dict[str, object]` | `Store.delta()` / `full()`, RPC results, agent messages | The type-safe spelling of JSON at the wire edge. Everything read from the wire goes through `WireReader` into a dataclass (`AgentHello`, `AgentMetrics`, `CollectorOptions`, …); names with a fixed set of values are enums (`RpcMethod`, `AgentCommand`, `Track`, `TaskState`, …). |
+| Plain class instead of a dataclass | `target/loop_monitor._LoopProbe` | `@dataclass` evaluates field annotations at import; its `asyncio` annotation would load `asyncio` into a program that does not use it (`test_isolation.py` fails if it does). |
+| Dataclasses without `slots=True` | `agent_protocol/` | The package is imported inside the profiled program (on its main thread when attaching). Slotted dataclasses rebuild every class and load `inspect`; plain frozen dataclasses keep the one-time import pause short. |
+| JSON objects as `dict[str, object]` | `to_wire()` / `from_wire()` of the message classes, `Store.delta()` / `full()`, and the transports (`RpcServer`, `AgentConnection.request`, `ProfileWriter`) | JSON exists only at the wire edge. Between classes, data travels as a `WireMessage` dataclass (RPC results, notifications, agent hello / metrics / replies, options) or another named type; names with a fixed set of values are enums. |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
 
 The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of

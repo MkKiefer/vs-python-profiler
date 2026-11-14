@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, create_autospec
 
+from _vscode_pyprof.agent_protocol.hello import AgentHello
 from _vscode_pyprof.collector.agent.connection import AgentConnection
-from _vscode_pyprof.collector.agent.hello import AgentHello
 from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
 from _vscode_pyprof.collector.agent.server import AgentServer
 from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
@@ -69,7 +69,10 @@ class TestCollectorSession(unittest.TestCase):
         """A real connection object on a mocked socket, registered without starting a sampler."""
         self.sampler_factory.create = MagicMock(side_effect=TachyonError("no such process"))
         connection = AgentConnection(
-            MagicMock(), AgentHello(4242, "python", ["app.py"], "/work", []), self.session, JsonLines()
+            MagicMock(),
+            AgentHello("token", 4242, "python", ["app.py"], "/work", "3.15.2", []),
+            self.session,
+            JsonLines(),
         )
         self.session.on_agent_hello(connection)
         return connection

@@ -12,9 +12,10 @@ import traceback
 from collections.abc import Callable
 from typing import BinaryIO
 
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireReader
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage, WireReader
 
-type RpcHandler = Callable[[WireReader], object]
+type RpcHandler = Callable[[WireReader], WireMessage]
+"""Takes the ``params`` of a request and returns its result."""
 
 
 class RpcError(Exception):
@@ -65,7 +66,7 @@ class RpcServer:
         try:
             if handler is None:
                 raise RpcError(f"unknown method {method!r}")
-            result = handler(message.get_object("params"))
+            result = handler(message.get_object("params")).to_wire()
         except Exception as error:
             if not isinstance(error, (RpcError, WireError)):  # those are the caller's mistakes
                 traceback.print_exc(file=sys.stderr)

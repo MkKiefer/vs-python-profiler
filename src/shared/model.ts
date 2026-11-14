@@ -62,7 +62,7 @@ export interface EventRec {
   [k: string]: unknown;
 }
 
-/** Session facts recorded by the collector (`Store.set_meta`). */
+/** Session facts recorded by the collector (`ProfileMeta` in `collector/store/profile_meta.py`). */
 export interface ProfileMeta {
   pid?: number;
   python?: string;

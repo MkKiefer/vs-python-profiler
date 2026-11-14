@@ -2,10 +2,14 @@ import os
 import unittest
 from _remote_debugging import AwaitedInfo, CoroInfo, FrameInfo, InterpreterInfo, LocationInfo, TaskInfo, ThreadInfo
 
+from _vscode_pyprof.agent_protocol.metrics import EventDetails
+from _vscode_pyprof.agent_protocol.replies import ObjectCounts, TypeCount
 from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
+from _vscode_pyprof.collector.options import CollectorOptions
+from _vscode_pyprof.collector.store.async_stack import AsyncStack
 from _vscode_pyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
 from _vscode_pyprof.collector.store.session_clock import SessionClock
-from _vscode_pyprof.collector.store.stack_table import StackTable
+from _vscode_pyprof.collector.store.stack_table import SourceFrame, StackTable
 from _vscode_pyprof.collector.store.store import Store
 from _vscode_pyprof.collector.store.track import Track
 from _vscode_pyprof.wire import WireReader
@@ -47,21 +51,23 @@ class StoreTestCase(unittest.TestCase):
 
 class TestStoreTracebacks(StoreTestCase):
     def test_intern_traceback_with_strip_launcher_drops_bootstrap_frames(self) -> None:
-        self.store.configure(strip_launcher=True)
+        self.store.describe_session(CollectorOptions(strip_launcher=True), None)
 
-        stack = self.store.intern_traceback([("<string>", "<module>", 1), (LAUNCHER, "run", 9), (APP, "main", 1)])
+        stack = self.store.intern_traceback(
+            [SourceFrame("<string>", "<module>", 1), SourceFrame(LAUNCHER, "run", 9), SourceFrame(APP, "main", 1)]
+        )
 
         self.assertListEqual(self.function_names(WireReader(self.store.delta()), stack), ["main"])
 
     def test_intern_traceback_without_strip_launcher_keeps_all_frames(self) -> None:
-        stack = self.store.intern_traceback([("<string>", "<module>", 1), (APP, "main", 1)])
+        stack = self.store.intern_traceback([SourceFrame("<string>", "<module>", 1), SourceFrame(APP, "main", 1)])
 
         self.assertListEqual(self.function_names(WireReader(self.store.delta()), stack), ["<module>", "main"])
 
     def test_intern_traceback_with_only_launcher_frames_returns_no_stack(self) -> None:
-        self.store.configure(strip_launcher=True)
+        self.store.describe_session(CollectorOptions(strip_launcher=True), None)
 
-        stack = self.store.intern_traceback([("<string>", "<module>", 1), (LAUNCHER, "run", 9)])
+        stack = self.store.intern_traceback([SourceFrame("<string>", "<module>", 1), SourceFrame(LAUNCHER, "run", 9)])
 
         self.assertEqual(stack, Store.NO_STACK)
 
@@ -102,7 +108,7 @@ class TestStoreSamples(StoreTestCase):
         self.assertEqual(WireReader(self.store.delta()).get_object("samples").get_list("t"), [])
 
     def test_add_thread_sample_with_strip_launcher_removes_bootstrap_frames(self) -> None:
-        self.store.configure(strip_launcher=True)
+        self.store.describe_session(CollectorOptions(strip_launcher=True), None)
         stack = [self.frame(APP, "main", 1), self.frame(LAUNCHER, "run", 9), self.frame("<string>", "<module>", 1)]
 
         self.store.add_thread_sample(1.0, self.threads((1, 0, stack)))
@@ -121,7 +127,7 @@ class TestStoreSamples(StoreTestCase):
         self.assertEqual(self.store.stats().samples, 2)
 
     def test_add_async_sample_records_rows_in_async_table(self) -> None:
-        self.store.add_async_sample(4.0, [([self.frame(APP, "handler", 7)], 55, 1)])
+        self.store.add_async_sample(4.0, [AsyncStack([self.frame(APP, "handler", 7)], thread_id=55, task_id=1)])
 
         delta = WireReader(self.store.delta())
 
@@ -214,8 +220,8 @@ class TestStoreSeriesAndEvents(StoreTestCase):
 
         self.assertEqual(WireReader(self.store.delta()).get_list("markers"), [[42.0, "deploy"]])
 
-    def test_add_event_merges_extra_fields(self) -> None:
-        self.store.add_event("slow-callback", "took 0.2s", 7.0, {"seconds": 0.2})
+    def test_add_event_merges_details(self) -> None:
+        self.store.add_event("slow-callback", "took 0.2s", 7.0, EventDetails(seconds=0.2))
 
         events = WireReader(self.store.delta()).get_list("events")
 
@@ -235,7 +241,7 @@ class TestStoreSeriesAndEvents(StoreTestCase):
         self.assertEqual(WireReader(self.store.delta()).get_raw("threads"), {})
 
     def test_add_object_counts_reports_latest_counts(self) -> None:
-        self.store.add_object_counts(3.0, [["dict", 10]])
+        self.store.add_object_counts(ObjectCounts(3.0, [TypeCount("dict", 10)]))
 
         self.assertEqual(
             WireReader(self.store.delta()).get_list("objectCounts"), [{"t": 3.0, "counts": [["dict", 10]]}]
@@ -260,7 +266,7 @@ class TestStoreDeltas(StoreTestCase):
 
     def test_delta_returns_only_data_added_since_previous_delta(self) -> None:
         self.store.add_track(Track.RSS, 1.0, 100)
-        self.store.intern_traceback([(APP, "main", 1)])
+        self.store.intern_traceback([SourceFrame(APP, "main", 1)])
         self.store.delta()
 
         self.store.add_track(Track.RSS, 2.0, 200)
@@ -272,7 +278,7 @@ class TestStoreDeltas(StoreTestCase):
     def test_delta_includes_meta_only_when_changed(self) -> None:
         first = WireReader(self.store.delta())
         second = WireReader(self.store.delta())
-        self.store.set_meta(pid=99)
+        self.store.set_target(99)
         third = WireReader(self.store.delta())
 
         self.assertTrue(first.has("meta"))
@@ -304,6 +310,46 @@ class TestStoreDeltas(StoreTestCase):
         full = WireReader(self.store.full())
 
         self.assertEqual((full.get_str("format"), full.get_int("version")), (Store.FORMAT, Store.FORMAT_VERSION))
+
+
+class TestStoreSessionFacts(StoreTestCase):
+    def meta(self) -> WireReader:
+        return WireReader(self.store.full()).get_object("meta")
+
+    def test_meta_of_new_store_describes_interpreter_only(self) -> None:
+        meta = self.meta()
+
+        self.assertTrue(meta.has("python"))
+        self.assertEqual([name for name in ("options", "label", "pid", "agent", "argv") if meta.has(name)], [])
+
+    def test_describe_session_records_options_and_label(self) -> None:
+        self.store.describe_session(CollectorOptions(rate_hz=200), "app.py")
+
+        meta = self.meta()
+
+        self.assertEqual((meta.get_object("options").get_int("rateHz"), meta.get_str("label")), (200, "app.py"))
+
+    def test_set_target_records_sampled_pid(self) -> None:
+        self.store.set_target(4242)
+
+        self.assertEqual(self.meta().get_int("pid"), 4242)
+
+    def test_set_agent_process_records_what_the_agent_reports(self) -> None:
+        self.store.set_agent_process("/usr/bin/python3.15", ["app.py"], "/work")
+
+        meta = self.meta()
+
+        self.assertTrue(meta.get_bool("agent", False))
+        self.assertEqual(
+            (meta.get_str("executable"), meta.get_str_list("argv"), meta.get_str("cwd")),
+            ("/usr/bin/python3.15", ["app.py"], "/work"),
+        )
+
+    def test_session_facts_are_kept_when_another_one_is_added(self) -> None:
+        self.store.set_target(4242)
+        self.store.set_agent_process(None, ["app.py"], None)
+
+        self.assertEqual(self.meta().get_int("pid"), 4242)
 
 
 if __name__ == "__main__":

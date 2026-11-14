@@ -6,19 +6,24 @@ import time
 from types import FrameType
 lazy import asyncio
 
+from _vscode_pyprof.agent_protocol.metrics import LoopMetrics
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
-from _vscode_pyprof.wire import JsonObject
 
 
 class _LoopProbe:
-    """Lag measurement state of one running event loop."""
+    """Lag measurement state of one running event loop.
+
+    Not a dataclass: ``@dataclass`` evaluates the field annotations when the
+    module is imported, which would load ``asyncio`` into the program.
+    """
 
     __slots__ = ("loop", "max_lag_ms", "pending_since", "thread_name")
 
     def __init__(self, loop: asyncio.AbstractEventLoop, thread_name: str) -> None:
         self.loop = loop
         self.thread_name = thread_name
-        self.pending_since: float | None = None  # a probe was scheduled and has not run yet
+        self.pending_since: float | None = None
+        """When a probe was scheduled that the loop has not run yet."""
         self.max_lag_ms = 0.0
 
 
@@ -67,21 +72,14 @@ class LoopMonitor:
             except RuntimeError:
                 self._probes.pop(key, None)
 
-    def take_metrics(self, now: float) -> list[JsonObject]:
+    def take_metrics(self, now: float) -> list[LoopMetrics]:
         """Worst lag and task count of every loop since the previous call."""
-        metrics: list[JsonObject] = []
+        metrics: list[LoopMetrics] = []
         for key, probe in list(self._probes.items()):
             lag = probe.max_lag_ms
             if probe.pending_since is not None:  # still waiting: the loop is blocked right now
                 lag = max(lag, (now - probe.pending_since) * 1000.0)
-            metrics.append(
-                {
-                    "loop": key,
-                    "thread": probe.thread_name,
-                    "lagMs": round(lag, 3),
-                    "tasks": self._task_count(probe.loop),
-                }
-            )
+            metrics.append(LoopMetrics(key, probe.thread_name, round(lag, 3), self._task_count(probe.loop)))
             probe.max_lag_ms = 0.0
         return metrics
 

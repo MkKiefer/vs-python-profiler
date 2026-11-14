@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from _vscode_pyprof.collector.store.append_log import AppendLog
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.wire import JsonObject, WireMessage
 
 
 class TaskState(StrEnum):
@@ -27,7 +27,7 @@ class TaskObservation:
 
 
 @dataclass(frozen=True, slots=True)
-class TaskRecord:
+class TaskRecord(WireMessage):
     """One asyncio task over its lifetime, as seen from outside the process."""
 
     task_id: int

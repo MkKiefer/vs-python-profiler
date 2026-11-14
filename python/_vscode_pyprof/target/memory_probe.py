@@ -7,7 +7,15 @@ lazy import gc
 lazy import tracemalloc
 lazy from collections import Counter
 
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.agent_protocol.metrics import TracedMemory
+from _vscode_pyprof.agent_protocol.replies import (
+    Allocation,
+    HeapSnapshot,
+    ObjectCounts,
+    SourceLine,
+    TracingStatus,
+    TypeCount,
+)
 
 
 class MemoryProbe:
@@ -25,30 +33,32 @@ class MemoryProbe:
     def __init__(self) -> None:
         self._started_tracing = False
 
-    def start_tracing(self, frames: int) -> JsonObject:
+    def start_tracing(self, frames: int) -> TracingStatus:
+        """Start tracemalloc recording ``frames`` frames per allocation, unless the program already traces."""
         if not tracemalloc.is_tracing():
             tracemalloc.start(frames)
             self._started_tracing = True
-        return {"tracing": True, "frames": tracemalloc.get_traceback_limit()}
+        return TracingStatus(tracing=True, frames=tracemalloc.get_traceback_limit())
 
-    def stop_tracing(self) -> JsonObject:
+    def stop_tracing(self) -> TracingStatus:
         tracemalloc.stop()
         self._started_tracing = False
-        return {"tracing": False}
+        return TracingStatus(tracing=False)
 
     def release(self) -> None:
         """Stop tracing if this probe started it; tracing the program started itself is left alone."""
         if self._started_tracing:
             self.stop_tracing()
 
-    def traced_memory(self) -> tuple[int, int] | None:
-        """``(current, peak)`` bytes while tracing, otherwise ``None``."""
+    def traced_memory(self) -> TracedMemory | None:
+        """What tracemalloc traces right now; ``None`` while it is not tracing."""
         # `in sys.modules` first: never load tracemalloc into a program that does not use it
         if "tracemalloc" in sys.modules and tracemalloc.is_tracing():
-            return tracemalloc.get_traced_memory()
+            current, peak = tracemalloc.get_traced_memory()
+            return TracedMemory(current, peak)
         return None
 
-    def snapshot(self, limit: int) -> JsonObject:
+    def snapshot(self, limit: int) -> HeapSnapshot:
         """Live allocations grouped by traceback, the ``limit`` largest in detail."""
         if not tracemalloc.is_tracing():
             raise RuntimeError("tracemalloc is not running; start memory tracing first")
@@ -61,15 +71,16 @@ class MemoryProbe:
         finally:
             sys.setswitchinterval(switch_interval)
 
-    def object_counts(self, limit: int) -> JsonObject:
+    def object_counts(self, limit: int) -> ObjectCounts:
         """The ``limit`` most common types among the objects the garbage collector tracks."""
         counts: Counter[str] = Counter()
         for obj in gc.get_objects():
             cls = type(obj)
             counts[cls.__qualname__ if cls.__module__ == "builtins" else f"{cls.__module__}.{cls.__qualname__}"] += 1
-        return {"t": time.perf_counter(), "counts": counts.most_common(limit)}
+        most_common = [TypeCount(type_name, count) for type_name, count in counts.most_common(limit)]
+        return ObjectCounts(time.perf_counter(), most_common)
 
-    def _snapshot(self, limit: int) -> JsonObject:
+    def _snapshot(self, limit: int) -> HeapSnapshot:
         started = time.perf_counter()
         # Filter after grouping: Snapshot.filter_traces() runs fnmatch per trace
         # in Python and dominates snapshot time on large heaps.
@@ -80,18 +91,23 @@ class MemoryProbe:
         ]
         top, rest = statistics[:limit], statistics[limit:]
         current, peak = tracemalloc.get_traced_memory()
-        return {
-            "t": started,
-            "totalSize": sum(s.size for s in statistics),
-            "totalCount": sum(s.count for s in statistics),
-            "otherSize": sum(s.size for s in rest),
-            "otherCount": sum(s.count for s in rest),
-            "traced": current,
-            "peak": peak,
-            # frames oldest first, as tracemalloc reports them
-            "top": [[[[frame.filename, frame.lineno] for frame in s.traceback], s.size, s.count] for s in top],
-            "takeMs": round((time.perf_counter() - started) * 1000, 1),
-        }
+        return HeapSnapshot(
+            perf_counter=started,
+            total_size=sum(statistic.size for statistic in statistics),
+            total_count=sum(statistic.count for statistic in statistics),
+            other_size=sum(statistic.size for statistic in rest),
+            other_count=sum(statistic.count for statistic in rest),
+            traced=current,
+            peak=peak,
+            take_ms=round((time.perf_counter() - started) * 1000, 1),
+            top=[self._allocation(statistic) for statistic in top],
+        )
+
+    @staticmethod
+    def _allocation(statistic: tracemalloc.Statistic) -> Allocation:
+        # frames oldest first, as tracemalloc reports them
+        traceback = [SourceLine(frame.filename, frame.lineno) for frame in statistic.traceback]
+        return Allocation(traceback, statistic.size, statistic.count)
 
     @classmethod
     def _is_own_allocation(cls, traceback: tracemalloc.Traceback) -> bool:

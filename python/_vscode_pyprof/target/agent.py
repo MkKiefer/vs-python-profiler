@@ -28,11 +28,16 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-from _vscode_pyprof.agent_protocol import AgentAddress, AgentCommand, AgentMessageType
+from _vscode_pyprof.agent_protocol.address import AgentAddress
+from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
+from _vscode_pyprof.agent_protocol.metrics import AgentEvent, AgentMetrics
+from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType
+from _vscode_pyprof.agent_protocol.options import AgentOptions
+from _vscode_pyprof.agent_protocol.replies import Acknowledgement, AsyncioDebugStatus, Pong
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
 from _vscode_pyprof.target.loop_monitor import LoopMonitor
 from _vscode_pyprof.target.memory_probe import MemoryProbe
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireReader
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireMessage, WireReader
 
 
 class Agent(threading.Thread):
@@ -42,17 +47,17 @@ class Agent(threading.Thread):
     _PROBE_INTERVAL = 0.1
     _CONNECT_TIMEOUT = 10.0
     _RECEIVE_SIZE = 65536
-    _DEFAULT_TRACEBACK_FRAMES = 16
+    _DEFAULT_TRACEBACK_FRAMES = AgentOptions().tracemalloc_frames
     _DEFAULT_SNAPSHOT_LIMIT = 3000
     _DEFAULT_OBJECT_COUNT_LIMIT = 60
 
     def __init__(
         self,
         address: AgentAddress,
-        options: WireReader,
+        options: AgentOptions,
         loops: LoopMonitor,
         memory: MemoryProbe,
-        events: deque[JsonObject],
+        events: deque[AgentEvent],
     ) -> None:
         """``events`` is filled from any thread; the agent drains it into its metrics."""
         super().__init__(name="pyprof-agent", daemon=True)
@@ -64,7 +69,7 @@ class Agent(threading.Thread):
         self._socket: socket.socket | None = None
         self._write_lock = threading.Lock()
         self._halt = threading.Event()
-        self._commands: dict[str, Callable[[WireReader], JsonObject]] = {
+        self._commands: dict[str, Callable[[WireReader], WireMessage]] = {
             AgentCommand.TRACEMALLOC_START: self._start_tracing,
             AgentCommand.TRACEMALLOC_STOP: self._stop_tracing,
             AgentCommand.SNAPSHOT: self._snapshot,
@@ -97,27 +102,22 @@ class Agent(threading.Thread):
             self._cleanup()
 
     def _send_hello(self) -> None:
-        self._send(
-            {
-                "type": AgentMessageType.HELLO,
-                "token": self._address.token,
-                "pid": os.getpid(),
-                "executable": sys.executable,
-                "argv": sys.argv,
-                "cwd": os.getcwd(),
-                "version": sys.version.split()[0],
-                "threads": self._thread_names(),
-            }
+        hello = AgentHello(
+            token=self._address.token,
+            pid=os.getpid(),
+            executable=sys.executable,
+            argv=list(sys.argv),
+            cwd=os.getcwd(),
+            version=sys.version.split()[0],
+            threads=self._thread_names(),
         )
+        self._send(hello.to_wire())
 
     def _apply_start_options(self) -> None:
-        if self._options.get_bool("tracemalloc", False):
-            self._memory.start_tracing(self._options.get_int("tracemallocFrames", self._DEFAULT_TRACEBACK_FRAMES))
-        if self._options.get_bool("asyncioDebug", False):
-            slow_callback_ms = (
-                self._options.get_float("slowCallbackMs") if self._options.has("slowCallbackMs") else None
-            )
-            self._loops.set_debug(True, slow_callback_ms)
+        if self._options.tracemalloc:
+            self._memory.start_tracing(self._options.tracemalloc_frames)
+        if self._options.asyncio_debug:
+            self._loops.set_debug(True, self._options.slow_callback_ms)
 
     def _serve(self, sock: socket.socket) -> None:
         lines = JsonLines()
@@ -144,7 +144,7 @@ class Agent(threading.Thread):
             command = self._commands.get(method)
             if command is None:
                 raise ValueError(f"unknown agent command {method!r}")
-            reply["result"] = command(request.get_object("params"))
+            reply["result"] = command(request.get_object("params")).to_wire()
         except Exception as error:  # report every failure to the collector instead of dying
             reply["error"] = f"{type(error).__name__}: {error}"
         self._send(reply)
@@ -160,22 +160,24 @@ class Agent(threading.Thread):
                 self._halt.set()
 
     def _send_metrics(self, now: float) -> None:
-        metrics: JsonObject = {"type": AgentMessageType.METRICS, "threads": self._thread_names()}
-        traced = self._memory.traced_memory()
-        if traced is not None:
-            metrics["traced"], metrics["tracedPeak"] = traced
-        loops = self._loops.take_metrics(now)
-        if loops:
-            metrics["loops"] = loops
-        events: list[JsonObject] = []
+        events: list[AgentEvent] = []
         while self._events:
             events.append(self._events.popleft())
-        if events:
-            metrics["events"] = events
-        self._send(metrics)
+        metrics = AgentMetrics(
+            threads=self._thread_names(),
+            traced=self._memory.traced_memory(),
+            loops=self._loops.take_metrics(now),
+            events=events,
+        )
+        self._send(metrics.to_wire())
 
-    def _thread_names(self) -> list[list[int | str | None]]:
-        return [[t.ident, t.native_id, t.name] for t in threading.enumerate() if t is not self]
+    def _thread_names(self) -> list[ThreadName]:
+        """Every thread of the program except the agent's own."""
+        return [
+            ThreadName(thread.ident, thread.native_id, thread.name)
+            for thread in threading.enumerate()
+            if thread is not self
+        ]
 
     def _cleanup(self) -> None:
         """Undo everything the agent changed in the program."""
@@ -190,29 +192,29 @@ class Agent(threading.Thread):
                 pass
 
     # ---- commands: one per ``AgentCommand``, each returns the result sent back to the collector
-    def _start_tracing(self, params: WireReader) -> JsonObject:
+    def _start_tracing(self, params: WireReader) -> WireMessage:
         return self._memory.start_tracing(params.get_int("frames", self._DEFAULT_TRACEBACK_FRAMES))
 
-    def _stop_tracing(self, _params: WireReader) -> JsonObject:
+    def _stop_tracing(self, _params: WireReader) -> WireMessage:
         return self._memory.stop_tracing()
 
-    def _snapshot(self, params: WireReader) -> JsonObject:
+    def _snapshot(self, params: WireReader) -> WireMessage:
         return self._memory.snapshot(params.get_int("limit", self._DEFAULT_SNAPSHOT_LIMIT))
 
-    def _object_counts(self, params: WireReader) -> JsonObject:
+    def _object_counts(self, params: WireReader) -> WireMessage:
         return self._memory.object_counts(params.get_int("limit", self._DEFAULT_OBJECT_COUNT_LIMIT))
 
-    def _set_asyncio_debug(self, params: WireReader) -> JsonObject:
+    def _set_asyncio_debug(self, params: WireReader) -> WireMessage:
         slow_callback_ms = params.get_float("slowMs") if params.has("slowMs") else None
         self._loops.set_debug(params.get_bool("enabled", True), slow_callback_ms)
-        return {"enabled": self._loops.debug, "loops": self._loops.loop_count}
+        return AsyncioDebugStatus(self._loops.debug, self._loops.loop_count)
 
-    def _ping(self, _params: WireReader) -> JsonObject:
-        return {"t": time.perf_counter(), "pid": os.getpid()}
+    def _ping(self, _params: WireReader) -> WireMessage:
+        return Pong(time.perf_counter(), os.getpid())
 
-    def _shutdown(self, _params: WireReader) -> JsonObject:
+    def _shutdown(self, _params: WireReader) -> WireMessage:
         self._halt.set()
-        return {"ok": True}
+        return Acknowledgement()
 
 
 class AgentRegistry:
@@ -222,23 +224,27 @@ class AgentRegistry:
     _agent: Agent | None = None
 
     @classmethod
-    def start(cls, address: str, options: dict[str, object] | None) -> Agent:
+    def start(cls, address: str, options_json: str | None) -> Agent:
         with cls._lock:
             if cls._agent is None or not cls._agent.is_alive():
-                cls._agent = cls._create(AgentAddress.parse(address), WireReader(options or {}))
+                cls._agent = cls._create(AgentAddress.parse(address), AgentOptions.from_json(options_json))
                 cls._agent.start()
             return cls._agent
 
     @staticmethod
-    def _create(address: AgentAddress, options: WireReader) -> Agent:
-        events: deque[JsonObject] = deque()
+    def _create(address: AgentAddress, options: AgentOptions) -> Agent:
+        events: deque[AgentEvent] = deque()
         loops = LoopMonitor(AsyncioDebugCapture(events.append))
         return Agent(address, options, loops, MemoryProbe(), events)
 
 
-def start(address: str, options: dict[str, object] | None = None) -> Agent:
-    """Idempotently start the agent; ``address`` is ``host:port:token``.
+def start(address: str, options_json: str | None = None) -> Agent:
+    """Idempotently start the agent.
 
     Entry point for the launcher and for the script ``sys.remote_exec`` runs.
+    Both arguments are text because they cross a process boundary (environment
+    variable, injected script): ``address`` is an ``AgentAddress``
+    (``host:port:token``), ``options_json`` an ``AgentOptions`` object as JSON.
+    Raises ``ValueError`` for a malformed address.
     """
-    return AgentRegistry.start(address, options)
+    return AgentRegistry.start(address, options_json)

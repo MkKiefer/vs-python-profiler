@@ -7,8 +7,8 @@ from typing import TextIO
 lazy import logging
 lazy import warnings
 
-from _vscode_pyprof.agent_protocol import EventKind
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.agent_protocol.metrics import AgentEvent, EventDetails
+from _vscode_pyprof.agent_protocol.names import EventKind
 
 
 class AsyncioDebugCapture:
@@ -21,7 +21,7 @@ class AsyncioDebugCapture:
     _MESSAGE_LIMIT = 2000
     _HANDLE_LIMIT = 500
 
-    def __init__(self, emit: Callable[[JsonObject], None]) -> None:
+    def __init__(self, emit: Callable[[AgentEvent], None]) -> None:
         self._emit = emit
         self._handler: logging.Handler | None = None
         self._original_showwarning: Callable[..., None] | None = None
@@ -68,36 +68,28 @@ class AsyncioDebugCapture:
         try:
             text = str(message)
             if issubclass(category, RuntimeWarning) and "never awaited" in text:
-                self._emit(
-                    {
-                        "t": time.perf_counter(),
-                        "kind": EventKind.NEVER_AWAITED,
-                        "message": text,
-                        "file": filename,
-                        "line": lineno,
-                    }
-                )
+                details = EventDetails(file=filename, line=lineno)
+                self._emit(AgentEvent(EventKind.NEVER_AWAITED, text, time.perf_counter(), details))
         except Exception:  # never let profiling break the program's warnings
             pass
         if self._original_showwarning is not None:
             self._original_showwarning(message, category, filename, lineno, file, line)
 
     def _on_log_record(self, record: logging.LogRecord) -> None:
+        happened = time.perf_counter()
         message = record.getMessage()
-        event: JsonObject = {
-            "t": time.perf_counter(),
-            "kind": EventKind.ASYNCIO,
-            "message": message[: self._MESSAGE_LIMIT],
-            "thread": threading.current_thread().name,
-        }
+        kind = EventKind.ASYNCIO
+        seconds: float | None = None
+        handle: str | None = None
         if message.startswith("Executing") and "took" in message:
-            event["kind"] = EventKind.SLOW_CALLBACK
-            args = record.args
+            kind = EventKind.SLOW_CALLBACK
+            args = record.args  # asyncio logs ("Executing %s took %.3f seconds", handle, seconds)
             if isinstance(args, tuple) and len(args) >= 2 and isinstance(args[-1], (int, float)):
-                event["seconds"] = float(args[-1])
-                event["handle"] = str(args[0])[: self._HANDLE_LIMIT]
+                seconds = float(args[-1])
+                handle = str(args[0])[: self._HANDLE_LIMIT]
         elif "was destroyed but it is pending" in message:
-            event["kind"] = EventKind.TASK_DESTROYED_PENDING
+            kind = EventKind.TASK_DESTROYED_PENDING
         elif "exception was never retrieved" in message:
-            event["kind"] = EventKind.EXCEPTION_NEVER_RETRIEVED
-        self._emit(event)
+            kind = EventKind.EXCEPTION_NEVER_RETRIEVED
+        details = EventDetails(thread=threading.current_thread().name, seconds=seconds, handle=handle)
+        self._emit(AgentEvent(kind, message[: self._MESSAGE_LIMIT], happened, details))

@@ -55,11 +55,13 @@ after(() => {
 
 test('attach starts a running session that receives samples', { skip }, async () => {
   await until(() => session.model.samples.length > 50, 'samples');
+  // Right after attaching, the main thread imports the injected agent; those samples are
+  // dropped as profiler-internal, so the program's own main-thread functions show up a moment later.
+  await until(() => session.model.fns.some((fn) => fn.func === 'fib'), 'main-thread samples');
 
   assert.equal(session.state, 'running');
   assert.equal(session.pid, target.pid);
   assert.equal(session.model.rateHz, 200);
-  assert.ok(session.model.fns.some((fn) => fn.func === 'fib'));
 });
 
 test('the injected agent connects and reports its capability', { skip }, async () => {

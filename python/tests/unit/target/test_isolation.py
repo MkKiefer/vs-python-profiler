@@ -14,7 +14,8 @@ import unittest
 
 from _vscode_pyprof import PACKAGE_DIR
 
-SHARED = {"_vscode_pyprof", "_vscode_pyprof.wire", "_vscode_pyprof.agent_protocol"}
+SHARED = ("_vscode_pyprof", "_vscode_pyprof.wire")
+SHARED_PACKAGES = ("_vscode_pyprof.agent_protocol", "_vscode_pyprof.target")
 # what a profile shows, and what the agent's "does the program use asyncio?" check reads
 FEATURE_MODULES = {"asyncio", "logging", "tracemalloc", "warnings"}
 
@@ -37,11 +38,12 @@ class TestTargetIsolation(unittest.TestCase):
 
     def foreign_package_modules_loaded_by(self, module: str) -> set[str]:
         """Profiler modules loaded by `module` that are neither shared nor part of the target package."""
-        own = "_vscode_pyprof.target"
         return {
-            m
-            for m in self.modules_loaded_by(module)
-            if m.startswith("_vscode_pyprof") and m not in SHARED and m != own and not m.startswith(own + ".")
+            name
+            for name in self.modules_loaded_by(module)
+            if name.startswith("_vscode_pyprof")
+            and name not in SHARED
+            and not any(name == package or name.startswith(package + ".") for package in SHARED_PACKAGES)
         }
 
     def test_agent_import_loads_no_collector_code(self) -> None:

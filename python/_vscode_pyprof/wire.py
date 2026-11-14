@@ -7,6 +7,7 @@ per line.
 """
 
 import json
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 
 type JsonObject = dict[str, object]
@@ -14,6 +15,19 @@ type JsonObject = dict[str, object]
 
 class WireError(ValueError):
     """A JSON message does not have the expected shape."""
+
+
+class WireMessage(ABC):
+    """A typed value that is sent as a JSON object.
+
+    Code passes these around instead of dicts; ``to_wire`` is called once, where
+    the message leaves the process.
+    """
+
+    __slots__ = ()
+
+    @abstractmethod
+    def to_wire(self) -> JsonObject: ...
 
 
 class WireReader:

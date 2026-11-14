@@ -2,6 +2,7 @@
 
 import threading
 import time
+from dataclasses import dataclass
 
 from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.collector.protocol import StopReason
@@ -26,6 +27,20 @@ class _Periodic:
             return False
         self._last = now
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class _CpuReading:
+    at: float
+    cpu_seconds: float
+    """CPU time the target had used at that moment."""
+
+
+@dataclass(frozen=True, slots=True)
+class _TickReading:
+    at: float
+    ticks: int
+    """Samples taken up to that moment."""
 
 
 class Sampler:
@@ -66,8 +81,8 @@ class Sampler:
         self._stop = threading.Event()
         self._ticks = 0
         self._known_children: set[int] = set()
-        self._last_cpu: tuple[float, float] | None = None  # (time, cumulative CPU seconds)
-        self._rate_window = (0, time.perf_counter())  # (ticks, time) at the previous rate measurement
+        self._last_cpu: _CpuReading | None = None
+        self._last_ticks = _TickReading(time.perf_counter(), 0)
         self._tasks_job = _Periodic(0.2)
         self._stats_job = _Periodic(0.5)
         self._gc_job = _Periodic(1.0)
@@ -143,7 +158,7 @@ class Sampler:
         try:
             running = self._tachyon.running_tasks()
             if running:
-                self._store.add_async_sample(t, list(self._tachyon.linearise(running)))
+                self._store.add_async_sample(t, self._tachyon.linearise(running))
         except ProcessLookupError:
             raise  # the target is gone: `_sample` ends the loop
         except Tachyon.READ_ERRORS:
@@ -170,16 +185,15 @@ class Sampler:
         if stats is None:
             return
         self._store.add_track(Track.RSS, t, stats.rss_bytes)
-        if self._last_cpu is not None:
-            measured_at, cpu_seconds = self._last_cpu
-            if now > measured_at:
-                percent = 100.0 * (stats.cpu_seconds - cpu_seconds) / (now - measured_at)
-                self._store.add_track(Track.CPU, t, round(max(0.0, percent), 1))
-        self._last_cpu = (now, stats.cpu_seconds)
+        previous = self._last_cpu
+        if previous is not None and now > previous.at:
+            percent = 100.0 * (stats.cpu_seconds - previous.cpu_seconds) / (now - previous.at)
+            self._store.add_track(Track.CPU, t, round(max(0.0, percent), 1))
+        self._last_cpu = _CpuReading(now, stats.cpu_seconds)
 
     def _measure_sampling_rate(self, now: float) -> None:
         """The rate actually achieved since the previous measurement (the target may be too slow to read)."""
-        ticks_before, measured_at = self._rate_window
-        if now > measured_at:
-            self._store.set_sampling_rate(round((self._ticks - ticks_before) / (now - measured_at), 1))
-        self._rate_window = (self._ticks, now)
+        previous = self._last_ticks
+        if now > previous.at:
+            self._store.set_sampling_rate(round((self._ticks - previous.ticks) / (now - previous.at), 1))
+        self._last_ticks = _TickReading(now, self._ticks)

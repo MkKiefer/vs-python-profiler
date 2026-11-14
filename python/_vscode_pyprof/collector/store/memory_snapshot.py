@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.wire import JsonObject, WireMessage
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +15,7 @@ class AllocationSite:
 
 
 @dataclass(frozen=True, slots=True)
-class MemorySnapshot:
+class MemorySnapshot(WireMessage):
     """A tracemalloc snapshot grouped by call stack.
 
     ``sites`` holds the largest call stacks; ``other_size``/``other_count`` sum

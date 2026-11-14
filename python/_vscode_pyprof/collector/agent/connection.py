@@ -6,8 +6,8 @@ import sys
 import threading
 import traceback
 
-from _vscode_pyprof.agent_protocol import AgentCommand, AgentMessageType
-from _vscode_pyprof.collector.agent.hello import AgentHello
+from _vscode_pyprof.agent_protocol.hello import AgentHello
+from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType
 from _vscode_pyprof.collector.agent.listener import AgentListener
 from _vscode_pyprof.wire import JsonLines, JsonObject, WireReader
 

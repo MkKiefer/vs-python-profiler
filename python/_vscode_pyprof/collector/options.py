@@ -2,11 +2,12 @@
 
 from dataclasses import dataclass, replace
 
-from _vscode_pyprof.wire import JsonObject, WireReader
+from _vscode_pyprof.agent_protocol.options import AgentOptions
+from _vscode_pyprof.wire import JsonObject, WireMessage, WireReader
 
 
 @dataclass(frozen=True, slots=True)
-class CollectorOptions:
+class CollectorOptions(WireMessage):
     """Mirror of ``CollectorOptions`` in ``src/shared/protocol.ts`` (camelCase on the wire)."""
 
     rate_hz: int = 1000
@@ -51,14 +52,14 @@ class CollectorOptions:
             "blocking": self.blocking,
         }
 
-    def agent_options(self) -> JsonObject:
+    def agent_options(self) -> AgentOptions:
         """The subset the in-process agent applies when it starts."""
-        return {
-            "tracemalloc": self.tracemalloc,
-            "tracemallocFrames": self.tracemalloc_frames,
-            "asyncioDebug": self.asyncio_debug,
-            "slowCallbackMs": self.slow_callback_ms,
-        }
+        return AgentOptions(
+            tracemalloc=self.tracemalloc,
+            tracemalloc_frames=self.tracemalloc_frames,
+            asyncio_debug=self.asyncio_debug,
+            slow_callback_ms=self.slow_callback_ms,
+        )
 
     def with_tracemalloc(self, enabled: bool) -> CollectorOptions:
         return replace(self, tracemalloc=enabled)

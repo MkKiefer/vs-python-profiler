@@ -3,13 +3,14 @@ import unittest
 import warnings
 from typing import TextIO
 
+from _vscode_pyprof.agent_protocol.metrics import AgentEvent
+from _vscode_pyprof.agent_protocol.names import EventKind
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
-from _vscode_pyprof.wire import JsonObject, WireReader
 
 
 class TestAsyncioDebugCapture(unittest.TestCase):
     def setUp(self) -> None:
-        self.events: list[JsonObject] = []
+        self.events: list[AgentEvent] = []
         self.shown: list[str] = []
         self.capture = AsyncioDebugCapture(self.events.append)
         self.logger = logging.getLogger("asyncio")
@@ -19,8 +20,8 @@ class TestAsyncioDebugCapture(unittest.TestCase):
         self.addCleanup(setattr, warnings, "showwarning", self.original_showwarning)
         self.addCleanup(self.capture.remove)
 
-    def last_event(self) -> WireReader:
-        return WireReader(self.events[-1])
+    def last_event(self) -> AgentEvent:
+        return self.events[-1]
 
     def show_warnings_in_test(self) -> None:
         """The program's own ``showwarning``: the capture must keep calling it."""
@@ -43,22 +44,23 @@ class TestAsyncioDebugCapture(unittest.TestCase):
         self.logger.warning("Executing %s took %.3f seconds", "<Handle work()>", 0.25)
 
         event = self.last_event()
-        self.assertEqual((event.get_str("kind"), event.get_float("seconds")), ("slow-callback", 0.25))
-        self.assertEqual(event.get_str("handle"), "<Handle work()>")
+        self.assertEqual((event.kind, event.details.seconds), (EventKind.SLOW_CALLBACK, 0.25))
+        self.assertEqual(event.details.handle, "<Handle work()>")
+        self.assertIsNotNone(event.perf_counter)
 
     def test_install_captures_destroyed_pending_task(self) -> None:
         self.capture.install()
 
         self.logger.error("Task was destroyed but it is pending!")
 
-        self.assertEqual(self.last_event().get_str("kind"), "task-destroyed-pending")
+        self.assertEqual(self.last_event().kind, EventKind.TASK_DESTROYED_PENDING)
 
     def test_install_captures_other_asyncio_warnings_as_plain_events(self) -> None:
         self.capture.install()
 
         self.logger.warning("socket.send() raised exception.")
 
-        self.assertEqual(self.last_event().get_str("kind"), "asyncio")
+        self.assertEqual(self.last_event().kind, EventKind.ASYNCIO)
 
     def test_install_ignores_records_below_warning_level(self) -> None:
         self.capture.install()
@@ -82,9 +84,7 @@ class TestAsyncioDebugCapture(unittest.TestCase):
         warnings.showwarning("coroutine 'work' was never awaited", RuntimeWarning, "app.py", 12)
 
         event = self.last_event()
-        self.assertEqual(
-            (event.get_str("kind"), event.get_str("file"), event.get_int("line")), ("never-awaited", "app.py", 12)
-        )
+        self.assertEqual((event.kind, event.details.file, event.details.line), (EventKind.NEVER_AWAITED, "app.py", 12))
         self.assertEqual(self.shown, ["coroutine 'work' was never awaited"])
 
     def test_install_does_not_capture_unrelated_warnings(self) -> None:

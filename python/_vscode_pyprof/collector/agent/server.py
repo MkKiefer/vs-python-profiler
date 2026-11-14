@@ -4,11 +4,12 @@ import secrets
 import socket
 import threading
 
-from _vscode_pyprof.agent_protocol import AgentAddress, AgentMessageType
+from _vscode_pyprof.agent_protocol.address import AgentAddress
+from _vscode_pyprof.agent_protocol.hello import AgentHello
+from _vscode_pyprof.agent_protocol.names import AgentMessageType
 from _vscode_pyprof.collector.agent.connection import AgentConnection
-from _vscode_pyprof.collector.agent.hello import AgentHello
 from _vscode_pyprof.collector.agent.listener import AgentListener
-from _vscode_pyprof.wire import JsonLines, WireReader
+from _vscode_pyprof.wire import JsonLines
 
 
 class AgentServer:
@@ -67,9 +68,11 @@ class AgentServer:
                 if not chunk:
                     raise OSError("closed during handshake")
                 lines.feed(chunk)
-            if not self._is_authentic_hello(message):
-                raise OSError("bad agent token")
+            if message.get_optional_str("type") != AgentMessageType.HELLO:
+                raise OSError("the first message must be a hello")
             hello = AgentHello.from_wire(message)
+            if not self._is_authentic(hello):
+                raise OSError("bad agent token")
         except OSError, ValueError:
             sock.close()
             return
@@ -78,8 +81,5 @@ class AgentServer:
         listener.on_agent_hello(connection)
         connection.start()
 
-    def _is_authentic_hello(self, message: WireReader) -> bool:
-        token = message.get_optional_str("token") or ""
-        return message.get_optional_str("type") == AgentMessageType.HELLO and secrets.compare_digest(
-            token.encode(), self._address.token.encode()
-        )
+    def _is_authentic(self, hello: AgentHello) -> bool:
+        return secrets.compare_digest(hello.token.encode(), self._address.token.encode())

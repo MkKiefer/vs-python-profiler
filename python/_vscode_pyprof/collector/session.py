@@ -8,20 +8,44 @@ target's CPython version and build).
 import os
 import sys
 import threading
+from dataclasses import replace
 
 from _vscode_pyprof import PACKAGE_DIR, PROTOCOL_VERSION
-from _vscode_pyprof.agent_protocol import AgentCommand, AgentMessageType, EventKind
+from _vscode_pyprof.agent_protocol.hello import ThreadName
+from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
+from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType, EventKind
+from _vscode_pyprof.agent_protocol.replies import (
+    Acknowledgement,
+    AsyncioDebugStatus,
+    HeapSnapshot,
+    ObjectCounts,
+    TracingStatus,
+)
 from _vscode_pyprof.collector.agent.connection import AgentConnection, AgentError
 from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
 from _vscode_pyprof.collector.agent.listener import AgentListener
-from _vscode_pyprof.collector.agent.metrics import AgentMetrics
 from _vscode_pyprof.collector.agent.server import AgentServer
-from _vscode_pyprof.collector.agent.thread_name import ThreadName
 from _vscode_pyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
+from _vscode_pyprof.collector.notifications import (
+    AgentConnected,
+    AgentDisconnected,
+    ChildrenFound,
+    ErrorOccurred,
+    Notification,
+    StateChanged,
+)
 from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.collector.profile_writer import ProfileWriter
 from _vscode_pyprof.collector.protocol import RpcMethod, RpcNotification, SessionState, StopReason
 from _vscode_pyprof.collector.rpc import RpcError, RpcHandler, RpcServer
+from _vscode_pyprof.collector.rpc_results import (
+    AttachResult,
+    Features,
+    InitializeResult,
+    SaveResult,
+    SnapshotResult,
+    StatusResult,
+)
 from _vscode_pyprof.collector.sampling.sampler import Sampler
 from _vscode_pyprof.collector.sampling.sampler_factory import SamplerFactory
 from _vscode_pyprof.collector.sampling.sampler_listener import SamplerListener
@@ -92,28 +116,27 @@ class CollectorSession(AgentListener, SamplerListener):
         self._agent_server.start(self)
 
     # ---- RPC API: one handler per request of ``CollectorRequests`` in ``src/shared/protocol.ts``
-    def _initialize(self, params: WireReader) -> JsonObject:
+    def _initialize(self, params: WireReader) -> InitializeResult:
         Tachyon.require()
         self._options = CollectorOptions.from_wire(params.get_object("options"))
-        self._store.configure(strip_launcher=self._options.strip_launcher)
-        self._store.set_meta(options=self._options.to_wire(), label=params.get_optional_str("label"))
+        self._store.describe_session(self._options, params.get_optional_str("label"))
         self._start_pump()
-        return {
-            "protocol": PROTOCOL_VERSION,
-            "python": sys.version.split()[0],
-            "executable": sys.executable,
-            "platform": sys.platform,
-            "pid": os.getpid(),
-            "agentAddress": self._agent_server.address,
-            "packageDir": PACKAGE_DIR,
-            "features": {
-                "gcStats": Tachyon.supports_gc_stats(),
-                "remoteExec": self._injector.is_supported(),
-                "asyncAware": Tachyon.supports_async_stacks(),
-            },
-        }
+        return InitializeResult(
+            protocol=PROTOCOL_VERSION,
+            python=sys.version.split()[0],
+            executable=sys.executable,
+            platform=sys.platform,
+            pid=os.getpid(),
+            agent_address=self._agent_server.address,
+            package_dir=PACKAGE_DIR,
+            features=Features(
+                gc_stats=Tachyon.supports_gc_stats(),
+                remote_exec=self._injector.is_supported(),
+                async_aware=Tachyon.supports_async_stacks(),
+            ),
+        )
 
-    def _attach(self, params: WireReader) -> JsonObject:
+    def _attach(self, params: WireReader) -> AttachResult:
         pid = params.get_int("pid")
         sampler = self._start_sampler(pid)
         injected = False
@@ -125,64 +148,65 @@ class CollectorSession(AgentListener, SamplerListener):
             except AgentInjectionError as error:  # sampling still works without the agent
                 inject_error = str(error)
                 self._store.add_event(EventKind.AGENT, f"Agent injection failed: {error}")
-        return {"pid": sampler.pid, "injected": injected, "injectError": inject_error}
+        return AttachResult(sampler.pid, injected, inject_error)
 
-    def _stop(self, params: WireReader) -> JsonObject:
+    def _stop(self, params: WireReader) -> Acknowledgement:
         self._stop_profiling(params.get_str("reason", StopReason.USER))
-        return {"ok": True}
+        return Acknowledgement()
 
-    def _status(self, _params: WireReader) -> JsonObject:
-        return {
-            "state": self._state,
-            "pid": self._sampler.pid if self._sampler else None,
-            "agent": self._agent is not None,
-            "stats": self._store.stats().to_wire(),
-        }
+    def _status(self, _params: WireReader) -> StatusResult:
+        return StatusResult(
+            state=self._state,
+            pid=self._sampler.pid if self._sampler else None,
+            agent=self._agent is not None,
+            stats=self._store.stats(),
+        )
 
-    def _set_tracemalloc(self, params: WireReader) -> JsonObject:
+    def _set_tracemalloc(self, params: WireReader) -> TracingStatus:
         agent = self._require_agent()
         enabled = params.get_bool("enabled", True)
         self._options = self._options.with_tracemalloc(enabled)
         if not enabled:
-            return self._ask(agent, AgentCommand.TRACEMALLOC_STOP).to_dict()
+            return TracingStatus.from_wire(self._ask(agent, AgentCommand.TRACEMALLOC_STOP))
         frames = params.get_int("frames", self._options.tracemalloc_frames)
-        return self._ask(agent, AgentCommand.TRACEMALLOC_START, {"frames": frames}).to_dict()
+        return TracingStatus.from_wire(self._ask(agent, AgentCommand.TRACEMALLOC_START, {"frames": frames}))
 
-    def _take_snapshot(self, params: WireReader) -> JsonObject:
+    def _take_snapshot(self, params: WireReader) -> SnapshotResult:
         agent = self._require_agent()
         limit = params.get_int("limit", self._DEFAULT_SNAPSHOT_LIMIT)
         reply = self._ask(agent, AgentCommand.SNAPSHOT, {"limit": limit}, self._SLOW_AGENT_TIMEOUT)
-        snapshot = self._snapshot_builder.build(reply, params.get_optional_str("label"))
+        snapshot = self._snapshot_builder.build(HeapSnapshot.from_wire(reply), params.get_optional_str("label"))
         self._store.add_snapshot(snapshot)
         self._store.add_marker(snapshot.label, snapshot.t)
-        return {"id": snapshot.snapshot_id, "totalSize": snapshot.total_size, "entries": len(snapshot.sites)}
+        return SnapshotResult(snapshot.snapshot_id, snapshot.total_size, len(snapshot.sites))
 
-    def _count_objects(self, params: WireReader) -> JsonObject:
+    def _count_objects(self, params: WireReader) -> ObjectCounts:
         agent = self._require_agent()
         limit = params.get_int("limit", self._DEFAULT_OBJECT_COUNT_LIMIT)
         reply = self._ask(agent, AgentCommand.OBJECT_COUNTS, {"limit": limit}, self._SLOW_AGENT_TIMEOUT)
-        t = self._clock.from_perf_counter(reply.get_float("t"))
-        counts = reply.get_list("counts")
-        self._store.add_object_counts(t, counts)
-        return {"t": t, "counts": counts}
+        counted = ObjectCounts.from_wire(reply)
+        counts = replace(counted, t=self._clock.from_perf_counter(counted.t))  # agent time -> session time
+        self._store.add_object_counts(counts)
+        return counts
 
-    def _set_asyncio_debug(self, params: WireReader) -> JsonObject:
+    def _set_asyncio_debug(self, params: WireReader) -> AsyncioDebugStatus:
         agent = self._require_agent()
         enabled = params.get_bool("enabled", True)
         self._options = self._options.with_asyncio_debug(enabled)
         slow_ms = params.get_float("slowMs", self._options.slow_callback_ms)
-        return self._ask(agent, AgentCommand.ASYNCIO_DEBUG, {"enabled": enabled, "slowMs": slow_ms}).to_dict()
+        reply = self._ask(agent, AgentCommand.ASYNCIO_DEBUG, {"enabled": enabled, "slowMs": slow_ms})
+        return AsyncioDebugStatus.from_wire(reply)
 
-    def _mark(self, params: WireReader) -> JsonObject:
+    def _mark(self, params: WireReader) -> Acknowledgement:
         self._store.add_marker(params.get_str("name", "marker"))
-        return {"ok": True}
+        return Acknowledgement()
 
-    def _save(self, params: WireReader) -> JsonObject:
+    def _save(self, params: WireReader) -> SaveResult:
         path = params.get_str("path")
         self._flush()
-        return {"path": path, "bytes": self._profile_writer.write(path, self._store.full())}
+        return SaveResult(path, self._profile_writer.write(path, self._store.full()))
 
-    def _shutdown(self, _params: WireReader) -> JsonObject:
+    def _shutdown(self, _params: WireReader) -> Acknowledgement:
         try:
             self._stop_profiling(StopReason.SHUTDOWN)
         finally:
@@ -191,60 +215,43 @@ class CollectorSession(AgentListener, SamplerListener):
             timer = threading.Timer(self._EXIT_DELAY, os._exit, args=(0,))
             timer.daemon = True
             timer.start()
-        return {"ok": True}
+        return Acknowledgement()
 
     # ---- agent events
     def on_agent_hello(self, connection: AgentConnection) -> None:
         hello = connection.hello
         self._agent = connection
         self._injector.cleanup()
-        self._store.set_meta(agent=True, executable=hello.executable, argv=hello.argv, cwd=hello.cwd)
+        self._store.set_agent_process(hello.executable, hello.argv, hello.cwd)
         self._name_threads(hello.threads)
         self._store.add_event(EventKind.AGENT, f"Agent connected (pid {hello.pid})")
-        self._rpc.notify(
-            RpcNotification.AGENT, {"connected": True, "pid": hello.pid, "argv": hello.argv, "cwd": hello.cwd}
-        )
+        self._notify(AgentConnected(hello.pid, hello.argv, hello.cwd))
         # launch mode: the launcher's agent tells us which pid to sample
         if self._sampler is None:
             try:
                 self._start_sampler(hello.pid)
             except RpcError as error:
-                self._rpc.notify(RpcNotification.ERROR, {"message": str(error)})
+                self._notify(ErrorOccurred(str(error)))
 
     def on_agent_message(self, connection: AgentConnection, message: WireReader) -> None:
-        if message.get_optional_str("type") != AgentMessageType.METRICS:
-            return
-        metrics = AgentMetrics.from_wire(message)
-        store = self._store
-        t = self._clock.now()
-        self._name_threads(metrics.threads)
-        if metrics.traced is not None and metrics.traced_peak is not None:
-            store.add_track(Track.TRACED, t, metrics.traced)
-            store.add_track(Track.TRACED_PEAK, t, metrics.traced_peak)
-        if metrics.loops:
-            store.add_track(Track.LOOP_LAG, t, round(max(loop.lag_ms for loop in metrics.loops), 3))
-            task_counts = [loop.tasks for loop in metrics.loops if loop.tasks is not None]
-            if task_counts:
-                store.add_track(Track.LOOP_TASKS, t, sum(task_counts))
-        for event in metrics.events:
-            happened = t if event.perf_counter is None else self._clock.from_perf_counter(event.perf_counter)
-            store.add_event(event.kind, event.message, happened, event.extra)
+        if message.get_optional_str("type") == AgentMessageType.METRICS:
+            self._record_metrics(AgentMetrics.from_wire(message))
 
     def on_agent_close(self, connection: AgentConnection) -> None:
         if self._agent is connection:
             self._agent = None
             self._store.add_event(EventKind.AGENT, "Agent disconnected")
-            self._rpc.notify(RpcNotification.AGENT, {"connected": False})
+            self._notify(AgentDisconnected())
 
     # ---- sampler events
     def on_target_exit(self, reason: StopReason) -> None:
         self._state = SessionState.EXITED
         self._agent = None
         self._flush()
-        self._rpc.notify(RpcNotification.STATE, {"state": self._state, "reason": reason})
+        self._notify(StateChanged(self._state, reason=reason))
 
     def on_children(self, pids: list[int]) -> None:
-        self._rpc.notify(RpcNotification.CHILDREN, {"pids": pids})
+        self._notify(ChildrenFound(pids))
 
     # ---- internals
     def _start_sampler(self, pid: int) -> Sampler:
@@ -257,13 +264,14 @@ class CollectorSession(AgentListener, SamplerListener):
             except TachyonError as error:
                 raise RpcError(str(error)) from None
             self._sampler = sampler
-            self._store.set_meta(pid=sampler.pid)
+            self._store.set_target(sampler.pid)
             sampler.start()
             self._state = SessionState.RUNNING
-        self._rpc.notify(RpcNotification.STATE, {"state": self._state, "pid": sampler.pid})
+        self._notify(StateChanged(SessionState.RUNNING, pid=sampler.pid))
         return sampler
 
     def _stop_profiling(self, reason: str) -> None:
+        """``reason`` is a ``StopReason`` value or whatever the extension sent."""
         with self._lock:
             if self._sampler is not None:
                 self._sampler.stop()
@@ -272,7 +280,23 @@ class CollectorSession(AgentListener, SamplerListener):
         if agent is not None:
             agent.close()
         self._flush()
-        self._rpc.notify(RpcNotification.STATE, {"state": SessionState.STOPPED, "reason": reason})
+        self._notify(StateChanged(SessionState.STOPPED, reason=reason))
+
+    def _record_metrics(self, metrics: AgentMetrics) -> None:
+        store = self._store
+        t = self._clock.now()
+        self._name_threads(metrics.threads)
+        if metrics.traced is not None:
+            store.add_track(Track.TRACED, t, metrics.traced.current)
+            store.add_track(Track.TRACED_PEAK, t, metrics.traced.peak)
+        if metrics.loops:
+            store.add_track(Track.LOOP_LAG, t, round(max(loop.lag_ms for loop in metrics.loops), 3))
+            task_counts = [loop.tasks for loop in metrics.loops if loop.tasks is not None]
+            if task_counts:
+                store.add_track(Track.LOOP_TASKS, t, sum(task_counts))
+        for event in metrics.events:
+            happened = t if event.perf_counter is None else self._clock.from_perf_counter(event.perf_counter)
+            store.add_event(event.kind, event.message, happened, event.details)
 
     def _require_agent(self) -> AgentConnection:
         agent = self._agent
@@ -290,6 +314,7 @@ class CollectorSession(AgentListener, SamplerListener):
         params: JsonObject | None = None,
         timeout: float = AgentConnection.DEFAULT_TIMEOUT,
     ) -> WireReader:
+        """Run a command in the target; the caller reads the reply into the command's reply type."""
         try:
             return agent.request(command, params, timeout)
         except AgentError as error:
@@ -299,6 +324,9 @@ class CollectorSession(AgentListener, SamplerListener):
         for thread in threads:
             for thread_id in thread.ids():
                 self._store.set_thread_name(thread_id, thread.name)
+
+    def _notify(self, notification: Notification) -> None:
+        self._rpc.notify(notification.method, notification.to_wire())
 
     def _start_pump(self) -> None:
         with self._lock:

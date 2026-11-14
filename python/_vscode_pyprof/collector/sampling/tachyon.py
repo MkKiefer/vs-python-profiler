@@ -16,11 +16,13 @@ here so a change in a future CPython only needs a fix in this file.
 import os
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
+
+from _vscode_pyprof.collector.store.async_stack import AsyncStack
 
 try:
     import _remote_debugging
-    from _remote_debugging import AwaitedInfo, FrameInfo, GCStatsInfo, RemoteUnwinder
+    from _remote_debugging import AwaitedInfo, GCStatsInfo, RemoteUnwinder
 except ImportError:  # interpreter too old / unsupported build; `Tachyon.require()` reports it
     _AVAILABLE = False
 else:
@@ -129,9 +131,12 @@ class Tachyon:
         return self._unwinder.get_all_awaited_by()
 
     @staticmethod
-    def linearise(awaited: list[AwaitedInfo]) -> Iterator[tuple[list[FrameInfo], int, int]]:
-        """Coroutine chains as linear stacks: ``(frames leaf-first, thread id, leaf task id)``."""
-        return iter_async_frames(awaited)
+    def linearise(awaited: list[AwaitedInfo]) -> list[AsyncStack]:
+        """The coroutine chain of every running leaf task as one linear stack."""
+        return [
+            AsyncStack(frames_leaf_first, thread_id, leaf_task_id)
+            for frames_leaf_first, thread_id, leaf_task_id in iter_async_frames(awaited)
+        ]
 
     def gc_stats(self) -> list[GCStatsInfo]:
         if self._gc_monitor is not None:
