@@ -34,6 +34,29 @@ const CURRENT_FILE_CONFIG: vscode.DebugConfiguration = {
 
 type ConfigItem = vscode.QuickPickItem & { folder: vscode.WorkspaceFolder; config: vscode.DebugConfiguration };
 
+const isPythonFile = (uri: vscode.Uri): boolean => uri.scheme === 'file' && uri.fsPath.endsWith('.py');
+
+/**
+ * The Python file the user means by "current file". A dashboard or a saved .pyprof
+ * opened from the Sessions view takes focus, leaving no active text editor, so fall
+ * back to a Python file that is still visible, then to the open Python tabs.
+ */
+function currentPythonFile(): vscode.Uri | undefined {
+  const active = vscode.window.activeTextEditor?.document.uri;
+  if (active && isPythonFile(active)) return active;
+  const visible = vscode.window.visibleTextEditors.find((e) => isPythonFile(e.document.uri));
+  if (visible) return visible.document.uri;
+  const groups = vscode.window.tabGroups;
+  const ordered = [groups.activeTabGroup, ...groups.all.filter((g) => g !== groups.activeTabGroup)];
+  for (const group of ordered) {
+    const tabs = [group.activeTab, ...group.tabs].filter((t): t is vscode.Tab => t !== undefined);
+    for (const tab of tabs) {
+      if (tab.input instanceof vscode.TabInputText && isPythonFile(tab.input.uri)) return tab.input.uri;
+    }
+  }
+  return undefined;
+}
+
 export class LaunchAdapter implements vscode.DebugConfigurationProvider {
   constructor(
     private readonly env: EnvironmentResolver,
@@ -117,7 +140,7 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
 
   // ------------------------------------------------------------- commands
   async profileFile(uri?: vscode.Uri): Promise<void> {
-    const target = uri ?? vscode.window.activeTextEditor?.document.uri;
+    const target = uri ?? currentPythonFile();
     if (!target?.fsPath.endsWith('.py')) {
       void vscode.window.showWarningMessage('Open a Python file to profile.');
       return;
