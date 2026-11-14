@@ -344,7 +344,7 @@
     "viewsWelcome": [
       {
         "view": "pyprof.sessions",
-        "contents": "Profile Python 3.15+ programs with the built-in Tachyon sampling profiler.\n[$(flame) Profile Current File](command:pyprof.profileFile)\n[$(debug-alt) Profile a Launch Configuration](command:pyprof.profileConfiguration)\n[$(plug) Attach to Running Process](command:pyprof.attach)\nIn any VS Code terminal you can also run `pyprof run <script | -m module | command>`.\n[Open a .pyprof file](command:pyprof.openProfile)"
+        "contents": "Profile Python 3.15+ programs with the built-in Tachyon sampling profiler.\n[$(flame) Profile Current File](command:pyprof.profileFile)\n[$(debug-alt) Profile a Launch Configuration](command:pyprof.profileConfiguration)\n[$(plug) Attach to Running Process](command:pyprof.attach)\n[Open a .pyprof file](command:pyprof.openProfile)"
       }
     ],
     "customEditors": [
@@ -616,11 +616,6 @@
           ],
           "default": "ask",
           "description": "What to do when a profiled program starts Python child processes (multiprocessing, workers)."
-        },
-        "pyprof.terminalIntegration": {
-          "type": "boolean",
-          "default": true,
-          "description": "Add the `pyprof` command to VS Code terminals (`pyprof run app.py`, `pyprof run uvicorn app:main`)."
         },
         "pyprof.autoSave": {
           "type": "boolean",

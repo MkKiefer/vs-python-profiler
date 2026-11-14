@@ -221,7 +221,7 @@ class Tachyon:
                 base
                 + " Linux restricts attaching to non-child processes"
                 + (f" (kernel.yama.ptrace_scope={scope})" if scope else "")
-                + ". Start the program with the profiler (Run with Profiler / `pyprof run`),"
+                + ". Start the program with the profiler (Run with Profiler),"
                 " or run `sudo sysctl kernel.yama.ptrace_scope=0`. In containers add `--cap-add=SYS_PTRACE`."
             )
         if sys.platform == "darwin":

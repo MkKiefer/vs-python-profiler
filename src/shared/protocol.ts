@@ -124,19 +124,3 @@ export type CollectorNotification =
   | { method: 'agent'; params: { connected: boolean; pid?: number; argv?: string[]; cwd?: string } }
   | { method: 'children'; params: { pids: number[] } }
   | { method: 'error'; params: { message: string } };
-
-// ───────────────────────────────────────────── terminal launcher → extension
-
-/** First line `pyprof run …` / `pyprof attach …` sends to the terminal hub. */
-export interface TerminalHello {
-  type: 'hello';
-  token: string;
-  pid: number;
-  executable: string;
-  version: string;
-  cwd: string;
-  kind: 'path' | 'module' | 'attach';
-  target: string;
-  args: string[];
-  argv: string[];
-}

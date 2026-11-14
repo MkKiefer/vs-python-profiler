@@ -21,7 +21,6 @@ interface Manifest {
 
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as Manifest;
 const subscriptions: { dispose(): unknown }[] = [];
-const terminalEnvironment = new Map<string, string>();
 let storage: string;
 
 before(() => {
@@ -32,19 +31,12 @@ before(() => {
     storageUri: Uri.file(storage),
     globalStorageUri: Uri.file(storage),
     subscriptions,
-    environmentVariableCollection: {
-      persistent: true,
-      description: '',
-      clear: () => terminalEnvironment.clear(),
-      replace: (name: string, value: string) => terminalEnvironment.set(name, value),
-      prepend: (name: string, value: string) => terminalEnvironment.set(name, value),
-    },
   };
   activate(context as unknown as ExtensionContext);
 });
 
 after(() => {
-  // if a timer or server survived disposal, the test process would not exit
+  // if a timer survived disposal, the test process would not exit
   for (const subscription of subscriptions) subscription.dispose();
   fs.rmSync(storage, { recursive: true, force: true });
 });
@@ -78,13 +70,6 @@ test('activation registers the profile editor and the debug type', () => {
 
 test('activation reports that no session is live', () => {
   assert.equal(recorded.contexts.get('pyprof.hasLiveSession'), false);
-});
-
-test('terminal integration exports the hub address and the pyprof command', async () => {
-  for (let i = 0; i < 100 && !terminalEnvironment.has('PYPROF_HUB'); i++) await new Promise((r) => setTimeout(r, 10));
-
-  assert.match(terminalEnvironment.get('PYPROF_HUB') ?? '', /^127\.0\.0\.1:\d+:[0-9a-f]{32}$/);
-  assert.ok(terminalEnvironment.get('PATH')?.startsWith(path.join(ROOT, 'bin')));
 });
 
 test('session commands without a session tell the user instead of failing', async () => {

@@ -126,9 +126,8 @@ def launch_target(client, info, app, *args, options=None):
         [
             sys.executable,
             "-c",
-            BOOT.format(mod="target.launcher", fn="cli_main"),
+            BOOT.format(mod="target.launcher", fn="main"),
             PYDIR,
-            "run",
             os.path.join(APPS, app),
             *args,
         ],
@@ -232,55 +231,6 @@ class E2E(unittest.TestCase):
         finally:
             c.close()
             target.kill()
-
-    def test_terminal_hub_handshake(self):
-        """`pyprof run` in a VS Code terminal: launcher → hub → collector → agent."""
-        import socket
-
-        token = "t0ken"
-        srv = socket.socket()
-        srv.bind(("127.0.0.1", 0))
-        srv.listen(1)
-        port = srv.getsockname()[1]
-        result = {}
-        c = Client()
-
-        def hub():
-            conn, _ = srv.accept()
-            hello = json.loads(conn.makefile().readline())
-            result["hello"] = hello
-            info = c.call("initialize", {"options": {"rateHz": 300, "stripLauncher": True}})
-            conn.sendall((json.dumps({"agent": info["agentAddress"], "options": {}}) + "\n").encode())
-            conn.close()
-
-        threading.Thread(target=hub, daemon=True).start()
-        try:
-            env = dict(os.environ, PYPROF_HUB=f"127.0.0.1:{port}:{token}")
-            env.pop("PYPROF_AGENT", None)
-            shim = os.path.join(ROOT, "bin", "pyprof")
-            cmd = (
-                [sys.executable, "-c", BOOT.format(mod="target.launcher", fn="cli_main"), PYDIR]
-                if os.name == "nt"
-                else [shim]
-            )
-            env["PYPROF_PYTHON"] = sys.executable
-            # `python app.py` form, like a user would type after `pyprof run`
-            p = subprocess.run(
-                [*cmd, "run", "--", "python", os.path.join(APPS, "cpu_bound.py"), "2"],
-                env=env,
-                capture_output=True,
-                timeout=60,
-                cwd=APPS,
-            )
-            self.assertEqual(p.returncode, 0, p.stderr.decode())
-            self.assertIn(b"done", p.stdout)
-            self.assertEqual(result["hello"]["token"], token)
-            self.assertTrue(result["hello"]["target"].endswith("cpu_bound.py"))
-            time.sleep(0.5)
-            self.assertIn("fib", c.funcs())
-        finally:
-            c.close()
-            srv.close()
 
     def test_blocking_mode_has_no_discarded_samples(self):
         c = Client()

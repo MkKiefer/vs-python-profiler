@@ -49,10 +49,6 @@ export const settings = {
     return config().get('autoSave', true);
   },
 
-  terminalIntegration(): boolean {
-    return config().get('terminalIntegration', true);
-  },
-
   /** Fallback interpreter when the Python extension is unavailable. */
   pythonPath(resource?: vscode.Uri): string | undefined {
     return config(resource).get<string>('pythonPath') || undefined;

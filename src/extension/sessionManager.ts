@@ -1,10 +1,9 @@
 /**
- * Owns all sessions and the three ways a live one starts. Every live path ends
+ * Owns all sessions and the two ways a live one starts. Every live path ends
  * in the same place – a collector process running with the *target's* interpreter:
  *
  *   launch   : collector first → terminal runs our launcher with PYPROF_AGENT
  *              → launcher's agent says hello (pid) → collector starts sampling
- *   terminal : `pyprof run …` → hub hello → collector → reply agent address → same as launch
  *   attach   : collector → attach(pid) → optional sys.remote_exec agent injection
  */
 import * as vscode from 'vscode';
@@ -17,7 +16,7 @@ import { PROFILE_EXTENSION, profileFileStem, readProfile, writeProfile } from '.
 import { Session } from './session';
 import { settings } from './settings';
 import { errorMessage } from '../shared/errors';
-import type { AttachOptions, CollectorOptions, InitializeResult, TerminalHello } from '../shared/protocol';
+import type { AttachOptions, CollectorOptions, InitializeResult } from '../shared/protocol';
 
 export interface LaunchSpec {
   python: PythonInfo;
@@ -94,7 +93,7 @@ export class SessionManager implements vscode.Disposable {
         name: `Profile: ${spec.label}`,
         shellPath: spec.python.executable,
         shellArgs: [
-          '-c', LAUNCHER_BOOT, this.paths.python, 'run',
+          '-c', LAUNCHER_BOOT, this.paths.python,
           ...(spec.kind === 'module' ? ['-m', spec.target] : [spec.target]),
           ...spec.args,
         ],
@@ -112,29 +111,6 @@ export class SessionManager implements vscode.Disposable {
       this.watchStartup(session);
     });
     return session;
-  }
-
-  /** `pyprof run …` typed in a VS Code terminal. Returns what the launcher needs to connect. */
-  async fromTerminal(hello: TerminalHello): Promise<{ agent: string; options: CollectorOptions }> {
-    const [major, minor] = hello.version.split('.').map(Number);
-    const python: PythonInfo = {
-      executable: hello.executable,
-      version: hello.version,
-      major,
-      minor,
-      freeThreaded: false,
-      label: `Python ${hello.version}`,
-    };
-    const label = [path.basename(hello.target), ...hello.args].join(' ');
-    const session = this.add(new Session(label, 'terminal', python));
-    const options: CollectorOptions = { ...settings.collectorOptions(), stripLauncher: true };
-    const info = await this.guardStartup(session, async () => {
-      const collector = await this.startCollector(session, hello.executable, options);
-      session.setState('waiting');
-      this.watchStartup(session);
-      return collector.info;
-    });
-    return { agent: info.agentAddress, options };
   }
 
   async attach(pid: number, python: PythonInfo, label: string, overrides: AttachOptions = {}): Promise<Session> {

@@ -5,7 +5,7 @@ import type { PythonInfo } from './environment';
 import { ProfileModel, type Delta } from '../shared/model';
 import type { Capabilities, CollectorNotification, SessionState } from '../shared/protocol';
 
-export type SessionKind = 'launch' | 'attach' | 'terminal' | 'file';
+export type SessionKind = 'launch' | 'attach' | 'file';
 
 const LIVE_STATES: ReadonlySet<SessionState> = new Set<SessionState>(['starting', 'waiting', 'running']);
 

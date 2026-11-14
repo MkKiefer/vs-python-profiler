@@ -1,6 +1,5 @@
 /** Composition root: builds the extension's objects and wires them together. */
 import * as vscode from 'vscode';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Commands } from './commands';
 import { Dashboards } from './dashboards';
@@ -14,7 +13,6 @@ import type { Session } from './session';
 import { SessionActions } from './sessionActions';
 import { SessionManager } from './sessionManager';
 import { settings } from './settings';
-import { TerminalHub } from './terminalHub';
 import { HotspotsView } from './views/hotspotsView';
 import { ProcessesView } from './views/processesView';
 import { SessionsView } from './views/sessionsView';
@@ -25,7 +23,6 @@ import { errorMessage } from '../shared/errors';
 export function activate(ctx: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Python Profiler', { log: true });
   const paths = new ExtPaths(ctx.extensionPath);
-  ensureShimExecutable(paths);
 
   const env = new EnvironmentResolver(log);
   const storage = path.join((ctx.storageUri ?? ctx.globalStorageUri).fsPath, 'profiles');
@@ -35,7 +32,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
   const actions = new SessionActions(sessions);
   const dashboards = new Dashboards(ctx, sessions, actions);
   const heat = new EditorHeat(sessions, dashboards);
-  const hub = new TerminalHub(ctx, paths, sessions, picker, log);
   const sessionsView = new SessionsView(sessions);
   const processesView = new ProcessesView(picker);
   const hotspotsView = new HotspotsView(sessions, dashboards);
@@ -44,7 +40,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
   launcher.register(ctx);
   new Commands({ log, sessions, actions, launcher, picker, dashboards, heat, processesView }).register(ctx);
   ctx.subscriptions.push(
-    log, env, sessions, dashboards, heat, hub, sessionsView, processesView, hotspotsView, tasksView,
+    log, env, sessions, dashboards, heat, sessionsView, processesView, hotspotsView, tasksView,
     new StatusBar(sessions),
     vscode.window.registerTreeDataProvider('pyprof.sessions', sessionsView),
     vscode.window.registerTreeDataProvider('pyprof.processes', processesView),
@@ -60,7 +56,6 @@ export function activate(ctx: vscode.ExtensionContext): void {
     }),
   );
 
-  hub.start().catch((e) => log.error(`terminal integration failed: ${errorMessage(e)}`));
   log.info('Python Profiler activated');
 }
 
@@ -94,15 +89,5 @@ async function followChildren(
     sessions
       .attach(pid, python, `${parent.label} › child ${pid}`)
       .catch((e) => log.warn(`child attach ${pid} failed: ${errorMessage(e)}`));
-  }
-}
-
-/** VSIX packaging may drop the executable bit on the POSIX shim. */
-function ensureShimExecutable(paths: ExtPaths): void {
-  if (process.platform === 'win32') return;
-  try {
-    fs.chmodSync(path.join(paths.bin, 'pyprof'), 0o755);
-  } catch {
-    /* read-only install: the shim then has to be executable already */
   }
 }

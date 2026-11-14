@@ -23,12 +23,10 @@ is installed into your environment and your code needs no changes.
 | Write a dedicated config | `launch.json` → *Add Configuration* → **Python Profiler: …** snippets (`"type": "python-profiler"`) |
 | Profile a test | right-click in a test file → **Profile Test at Cursor** |
 | Profile a running process | sidebar **Python Processes**, or **Attach Profiler to Process…** |
-| Use the terminal (uv, poetry, make…) | `pyprof run app.py` · `pyprof run -m pkg` · `pyprof run uvicorn app:main` · `uv run pyprof run -- python app.py` |
 
 The extension doesn't manage environments. It uses the interpreter the **Python
 extension** selected for each file or folder (venv, uv, Poetry, conda, pyenv; multi-root
-aware), plus your `.env`/`envFile`/`env`/`cwd`/`args`. In terminals, `pyprof` uses
-whichever environment is active in that terminal. If the interpreter is older than 3.15,
+aware), plus your `.env`/`envFile`/`env`/`cwd`/`args`. If the interpreter is older than 3.15,
 you get a one-click fix: select another interpreter or create a 3.15 venv (uses `uv` when
 available).
 
@@ -53,7 +51,6 @@ VS Code extension host (TypeScript, src/extension)        Webview dashboard (Vue
  ├ LaunchAdapter       ← debugpy configs, python-profiler debug type      │
  ├ SessionManager / Session / CollectorClient ─────────────────────────────┘
  ├ SessionActions · Commands (every pyprof.* command)
- ├ TerminalHub (PYPROF_HUB, `pyprof` on PATH)
  ├ Dashboards · EditorHeat (decorations, CodeLens) · views/ · StatusBar
  │
  │ JSON-lines RPC over stdio            contract: src/shared/protocol.ts
@@ -70,7 +67,7 @@ python/_vscode_pyprof/
  │ └ agent_link.py     starts the agent in a running program (sys.remote_exec) and accepts its connection
  │                       ▲ localhost TCP + token
  ├ target/             runs *inside the profiled program*; imports nothing from collector/
- │ ├ launcher.py       `pyprof run`: runs your program in *your* environment (runpy), starts the agent
+ │ ├ launcher.py       Run with Profiler: runs your program in *your* environment (runpy), starts the agent
  │ └ agent.py          tracemalloc, loop-lag probe, asyncio debug, object counts → agent_link
  ├ wire.py             typed JSON access, shared by collector/ and target/
  └ processes.py        standalone script (any Python): lists Python processes
@@ -81,7 +78,7 @@ python/_vscode_pyprof/
   (`t, tid, stack, status`), tracks, tasks, snapshots and events. Live deltas and
   `.pyprof` files (gzip JSON) have the same shape.
 - **One wire contract.** Every message that crosses a process boundary (webview ⇄
-  extension ⇄ collector, terminal launcher → extension) is declared in
+  extension ⇄ collector) is declared in
   `src/shared/protocol.ts`; the Python side validates incoming JSON once, at the
   boundary, through `wire.WireReader`.
 - **Two sides, kept apart.** `collector/` observes the program from outside;
@@ -122,7 +119,7 @@ npm run test:webview       # just the dashboard specs (Vitest + jsdom)
 cd python
 pdm install -G dev         # Python 3.15 venv with ruff, mypy, vulture
 pdm run check              # ruff lint + format check, mypy --strict, vulture, unit tests (the Python gate)
-pdm run test:integration   # collector end-to-end: launch, attach+inject, memory, asyncio, terminal hub
+pdm run test:integration   # collector end-to-end: launch, attach+inject, memory, asyncio
 ```
 
 | Tests | What they cover |
@@ -138,7 +135,7 @@ Press **F5** ("Run Extension") to open an Extension Development Host on `test-ap
 
 Settings are under `pyprof.*`: sampling rate, blocking sampling, tracemalloc on start
 and frames, asyncio debug and slow-callback threshold, heat map metric, CodeLens,
-child-process handling, terminal integration and auto-save. `src/extension/settings.ts`
+child-process handling and auto-save. `src/extension/settings.ts`
 is the only module that reads them.
 
 ### Coding standards
@@ -163,7 +160,7 @@ the collector's own Python 3.15 process:
 | Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
 | Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |
-| Module-level entry points | `collector.cli.main`, `target.launcher.cli_main`, `target.agent.start` | Called by name from the shell shims and from `sys.remote_exec`; they only delegate to a class. |
+| Module-level entry points | `collector.cli.main`, `target.launcher.main`, `target.agent.start` | Called by name from the extension's `python -c` bootstraps and from `sys.remote_exec`; they only delegate to a class. |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
 
 The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of
