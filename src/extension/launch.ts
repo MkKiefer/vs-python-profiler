@@ -144,9 +144,13 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
   }
 
   // ------------------------------------------------------------- commands
-  async profileFile(uri?: vscode.Uri): Promise<void> {
-    const target = uri ?? currentPythonFile();
-    if (!target?.fsPath.endsWith('.py')) {
+  /**
+   * `arg` is whatever the invoking menu passes: a file Uri from the explorer or an editor, but a tree node from
+   * the Sessions view toolbar and nothing (or a non-file Uri) from other places, so only a Python file Uri counts.
+   */
+  async profileFile(arg?: unknown): Promise<void> {
+    const target = arg instanceof vscode.Uri && isPythonFile(arg) ? arg : currentPythonFile();
+    if (!target) {
       void vscode.window.showWarningMessage('Open a Python file to profile.');
       return;
     }

@@ -35,7 +35,7 @@ export class Commands {
   register(ctx: vscode.ExtensionContext): void {
     const { sessions, actions, launcher, picker, heat, processesView } = this.deps;
     const handlers: Record<string, (...args: never[]) => unknown> = {
-      'pyprof.profileFile': (uri?: vscode.Uri) => launcher.profileFile(uri),
+      'pyprof.profileFile': (arg?: unknown) => launcher.profileFile(arg),
       'pyprof.profileConfiguration': () => launcher.profileConfiguration(),
       'pyprof.profileTest': () => launcher.profileTest(),
       'pyprof.attach': () => picker.pickAndAttach(),
