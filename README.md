@@ -168,6 +168,28 @@ and frames, asyncio debug and slow-callback threshold, heat map metric, CodeLens
 child-process handling and auto-save. `src/extension/settings.ts`
 is the only module that reads them.
 
+### Releasing
+
+Every CI run uploads the packaged extension as the `vsix` workflow artifact. To publish a
+version, bump `version` in both `package.json` and `python/pyproject.toml`, merge to `main`,
+then tag that commit:
+
+```bash
+git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` checks that the tag is `vX.Y.Z`, matches both versions and is
+on `main`, runs the full CI, and creates a GitHub release with the `.vsix`, `SHA256SUMS.txt`,
+generated notes and a signed build provenance attestation. Verify a download with
+`gh attestation verify python-profiler-0.2.0.vsix --repo <owner>/<repo>`, install it with
+`code --install-extension python-profiler-0.2.0.vsix`.
+
+Hardening: the workflows grant the token only what each job needs (only the final `publish`
+job can write, and it runs no repository code), pin actions to commit SHAs (Dependabot
+updates them), install npm packages with `--ignore-scripts`, and build releases without the
+npm cache. Recommended repository settings: a tag ruleset restricting who may create `v*`
+tags, required reviewers on the `release` environment, and immutable releases.
+
 ### Coding standards
 
 The Python code follows the team's Python and unittest style guides: behaviour lives

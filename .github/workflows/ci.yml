@@ -1,19 +1,40 @@
 name: CI
 on:
   push:
+    # Tags are built by release.yml, which calls this workflow.
+    branches: ['**']
   pull_request:
+  workflow_call:
+    outputs:
+      vsix:
+        description: File name of the packaged extension inside the "vsix" artifact
+        value: ${{ jobs.package.outputs.vsix }}
 
+# Least privilege: nothing in CI writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a release run (workflow_call shares the caller's ref).
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+# Third-party and GitHub actions are pinned to full commit SHAs (tags can be
+# moved); Dependabot keeps the pins up to date.
 jobs:
   extension:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: 22, cache: npm }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         id: python
         with: { python-version: '3.15', allow-prereleases: true }
-      - run: npm ci
+      # No dependency install scripts: the build does not need them.
+      - run: npm ci --ignore-scripts
       - run: npm run check
         env:
           # enables test/session.integration.test.ts (real collector + target)
@@ -25,12 +46,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
-      - uses: pdm-project/setup-pdm@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: pdm-project/setup-pdm@544d7237314ee09c256785bd360f6b30add38b37 # v4.6
         with: { python-version: '3.15', allow-python-prereleases: true, cache: true, cache-dependency-path: python/pdm.lock }
       - run: pdm install -G dev
       - name: quality gate (lint, format, types, dead code, unit tests)
@@ -42,3 +65,33 @@ jobs:
       - name: integration
         if: runner.os != 'macOS'
         run: pdm run test:integration
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      vsix: ${{ steps.pack.outputs.vsix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          # Release builds start from a clean npm cache so a poisoned cache entry
+          # cannot end up in a published artifact.
+          cache: ${{ startsWith(github.ref, 'refs/tags/') && '' || 'npm' }}
+      - run: npm ci --ignore-scripts
+      - name: package
+        id: pack
+        run: |
+          mkdir -p out
+          npm run package -- --out out
+          vsix=$(basename out/*.vsix)
+          echo "vsix=$vsix" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vsix
+          path: out/*.vsix
+          if-no-files-found: error
+          compression-level: 0 # a .vsix is already a zip
+          retention-days: 30
