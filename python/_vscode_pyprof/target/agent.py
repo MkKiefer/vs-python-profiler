@@ -11,9 +11,12 @@ OS) and provides what cannot be read from outside:
 
 Everything here is stdlib-only and must be cheap when idle. Because this code
 runs in the *user's* process, modules the program may not use itself
-(``asyncio``, ``tracemalloc``, ``logging``, ``warnings``, ``gc``) are imported
-lazily, only when the matching feature is used: importing them up front would
-slow the program down and change what the profile shows.
+(``asyncio``, ``tracemalloc``, ``logging``, ``warnings``, ``gc``) are ``lazy``
+imports (PEP 810): they load on first use of the matching feature, so they
+neither slow the program down nor change what the profile shows, and the
+``"asyncio" in sys.modules`` checks still tell whether the *program* uses asyncio.
+(In attach mode, a lazy-imports filter the program installed may load them
+eagerly; that costs a few imports, never wrong data.)
 """
 
 import json
@@ -25,16 +28,16 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from types import FrameType
+from typing import TextIO
+lazy import asyncio
+lazy import gc
+lazy import logging
+lazy import tracemalloc
+lazy import warnings
+lazy from collections import Counter
 
 from _vscode_pyprof.wire import JsonObject, WireReader
-
-if TYPE_CHECKING:
-    import asyncio
-    import logging
-    import tracemalloc
-    from types import FrameType
-    from typing import TextIO
 
 
 class _LoopProbe:
@@ -58,9 +61,6 @@ class _AsyncioDebugCapture:
         self._original_showwarning: Callable[..., None] | None = None
 
     def install(self) -> None:
-        import logging
-        import warnings
-
         if self._handler is None:
             capture = self
 
@@ -81,12 +81,8 @@ class _AsyncioDebugCapture:
 
     def remove(self) -> None:
         if self._handler is not None:
-            import logging
-
             logging.getLogger("asyncio").removeHandler(self._handler)
         if self._original_showwarning is not None:
-            import warnings
-
             warnings.showwarning = self._original_showwarning
             self._original_showwarning = None
 
@@ -253,8 +249,6 @@ class Agent(threading.Thread):
     def _cleanup(self) -> None:
         """Undo everything the agent changed in the program."""
         if self._started_tracemalloc:
-            import tracemalloc
-
             tracemalloc.stop()
             self._started_tracemalloc = False
         self._set_asyncio_debug(False)
@@ -272,13 +266,11 @@ class Agent(threading.Thread):
 
     def _send_metrics(self, now: float) -> None:
         metrics: JsonObject = {"type": "metrics", "threads": self._thread_names()}
-        if "tracemalloc" in sys.modules:
-            import tracemalloc
-
-            if tracemalloc.is_tracing():
-                current, peak = tracemalloc.get_traced_memory()
-                metrics["traced"] = current
-                metrics["tracedPeak"] = peak
+        # `in sys.modules` first: never load tracemalloc into a program that does not use it
+        if "tracemalloc" in sys.modules and tracemalloc.is_tracing():
+            current, peak = tracemalloc.get_traced_memory()
+            metrics["traced"] = current
+            metrics["tracedPeak"] = peak
         loops: list[JsonObject] = []
         for key, probe in list(self._loops.items()):
             lag = probe.max_lag_ms
@@ -304,8 +296,6 @@ class Agent(threading.Thread):
 
     @staticmethod
     def _task_count(loop: asyncio.AbstractEventLoop) -> int | None:
-        import asyncio
-
         try:
             return len(asyncio.all_tasks(loop))
         except RuntimeError:  # task set changed while iterating
@@ -340,8 +330,6 @@ class Agent(threading.Thread):
 
     def _scan_loops(self) -> None:
         """Find running event loops by walking the frames of every thread."""
-        import asyncio
-
         names = {t.ident: t.name for t in threading.enumerate()}
         for ident, top_frame in sys._current_frames().items():
             frame: FrameType | None = top_frame
@@ -389,23 +377,17 @@ class Agent(threading.Thread):
 
     # ------------------------------------------------------------ tracemalloc
     def _cmd_tracemalloc_start(self, params: WireReader) -> JsonObject:
-        import tracemalloc
-
         if not tracemalloc.is_tracing():
             tracemalloc.start(params.get_int("frames", 16))
             self._started_tracemalloc = True
         return {"tracing": True, "frames": tracemalloc.get_traceback_limit()}
 
     def _cmd_tracemalloc_stop(self, _params: WireReader) -> JsonObject:
-        import tracemalloc
-
         tracemalloc.stop()
         self._started_tracemalloc = False
         return {"tracing": False}
 
     def _cmd_snapshot(self, params: WireReader) -> JsonObject:
-        import tracemalloc
-
         if not tracemalloc.is_tracing():
             raise RuntimeError("tracemalloc is not running; start memory tracing first")
         # A snapshot is stop-the-world anyway; hold the GIL longer so a busy
@@ -418,8 +400,6 @@ class Agent(threading.Thread):
             sys.setswitchinterval(switch_interval)
 
     def _snapshot(self, take_snapshot: Callable[[], tracemalloc.Snapshot], limit: int) -> JsonObject:
-        import tracemalloc
-
         started = time.perf_counter()
         # Filter after grouping: Snapshot.filter_traces() runs fnmatch per trace
         # in Python and dominates snapshot time on large heaps.
@@ -442,17 +422,12 @@ class Agent(threading.Thread):
     @staticmethod
     def _is_own_allocation(traceback: tracemalloc.Traceback) -> bool:
         """Allocated by tracemalloc itself or anywhere inside this agent."""
-        import tracemalloc
-
         if len(traceback) and traceback[-1].filename == tracemalloc.__file__:
             return True
         return any(frame.filename == Agent._SOURCE_FILE for frame in traceback)
 
     # ---------------------------------------------------------- object counts
     def _cmd_object_counts(self, params: WireReader) -> JsonObject:
-        import gc
-        from collections import Counter
-
         counts: Counter[str] = Counter()
         for obj in gc.get_objects():
             cls = type(obj)

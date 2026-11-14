@@ -150,7 +150,7 @@ the collector's own Python 3.15 process:
 
 | Exception | Where | Why |
 |---|---|---|
-| Lazy imports inside functions | `target/agent.py` (`asyncio`, `tracemalloc`, `logging`, `warnings`, `gc`), `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*. Importing modules the program does not use itself would slow it down, show up in its profile, and break the agent's "does this program use asyncio?" check. |
+| Imports inside functions | `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; `target/agent.py` and `collector/store.py` use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). |
 | Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
 | Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |

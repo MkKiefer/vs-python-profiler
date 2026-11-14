@@ -21,13 +21,12 @@ import threading
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+
+# annotations only (never evaluated at runtime): the store imports without the private Tachyon module
+lazy from _remote_debugging import AwaitedInfo, FrameInfo, InterpreterInfo
 
 from _vscode_pyprof.collector.frames import FrameClassifier
 from _vscode_pyprof.wire import JsonObject
-
-if TYPE_CHECKING:  # annotations only: keeps the store importable without the private Tachyon module
-    from _remote_debugging import AwaitedInfo, FrameInfo, InterpreterInfo
 
 type FrameKey = tuple[str, str, int]
 """``(filename, function, line)``"""
