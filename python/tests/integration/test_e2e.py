@@ -259,7 +259,9 @@ class E2E(unittest.TestCase):
             env.pop("PYPROF_AGENT", None)
             shim = os.path.join(ROOT, "bin", "pyprof")
             cmd = (
-                [sys.executable, "-c", BOOT.format(mod="target.launcher", fn="cli_main"), PYDIR] if os.name == "nt" else [shim]
+                [sys.executable, "-c", BOOT.format(mod="target.launcher", fn="cli_main"), PYDIR]
+                if os.name == "nt"
+                else [shim]
             )
             env["PYPROF_PYTHON"] = sys.executable
             # `python app.py` form, like a user would type after `pyprof run`
