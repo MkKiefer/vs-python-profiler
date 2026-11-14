@@ -2,7 +2,7 @@
 !dist/extension.js
 !dist/webview.js
 !dist/webview.css
-!python/_vscode_pyprof/*.py
+!python/_vscode_pyprof/**/*.py
 !bin/**
 !media/**
 !package.json

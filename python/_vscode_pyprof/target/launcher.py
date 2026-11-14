@@ -272,7 +272,7 @@ Must be run from a VS Code terminal with the Python Profiler extension active.
 
     def _start_agent(self, agent_address: str, options: dict[str, object]) -> None:
         # Imported only after the version check: the agent needs Python 3.15.
-        from _vscode_pyprof import agent
+        from _vscode_pyprof.target import agent
 
         host, port, token = agent_address.rsplit(":", 2)
         started = agent.start(host, int(port), token, options)

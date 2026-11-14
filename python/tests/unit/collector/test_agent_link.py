@@ -3,7 +3,7 @@ import socket
 import threading
 import unittest
 
-from _vscode_pyprof.agent_server import AgentConnection, AgentError, AgentHello, AgentListener, AgentServer
+from _vscode_pyprof.collector.agent_link import AgentConnection, AgentError, AgentHello, AgentListener, AgentServer
 from _vscode_pyprof.wire import JsonObject, WireReader
 
 

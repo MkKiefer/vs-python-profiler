@@ -4,7 +4,7 @@ The extension starts the collector with the target's interpreter in isolated
 mode so nothing from the user's environment can interfere::
 
     python -I -c "import sys; sys.path.insert(0, sys.argv.pop(1)); \
-                  from _vscode_pyprof.cli import main; main()" <dir> serve
+                  from _vscode_pyprof.collector.cli import main; main()" <dir> serve
 
 This module must stay importable on older interpreters (Python 3.10+) so it can
 report a clear version error; everything that needs Python 3.15 is imported
@@ -34,14 +34,12 @@ class CollectorCli:
             sys.stderr.write(f"Python {wanted}+ required, got {sys.version}\n")
             sys.exit(self.EXIT_UNSUPPORTED_PYTHON)
         # Deliberately imported here: these modules use Python 3.15 syntax and APIs.
-        from _vscode_pyprof.agent_injector import AgentInjector
-        from _vscode_pyprof.agent_server import AgentServer
-        from _vscode_pyprof.collector import Collector
-        from _vscode_pyprof.frame_classifier import FrameClassifier
-        from _vscode_pyprof.funcresolver import FuncResolver
-        from _vscode_pyprof.rpc import RpcServer
-        from _vscode_pyprof.sampler import SamplerFactory
-        from _vscode_pyprof.store import Store
+        from _vscode_pyprof.collector.agent_link import AgentInjector, AgentServer
+        from _vscode_pyprof.collector.frames import FrameClassifier, FuncResolver
+        from _vscode_pyprof.collector.rpc import RpcServer
+        from _vscode_pyprof.collector.sampler import SamplerFactory
+        from _vscode_pyprof.collector.service import Collector
+        from _vscode_pyprof.collector.store import Store
 
         out = sys.stdout.buffer
         sys.stdout = sys.stderr  # nothing may print to the RPC channel

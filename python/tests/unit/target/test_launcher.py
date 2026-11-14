@@ -7,7 +7,7 @@ import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from _vscode_pyprof.launcher import HubClient, Launcher, LauncherError, Target, TargetParser
+from _vscode_pyprof.target.launcher import HubClient, Launcher, LauncherError, Target, TargetParser
 from _vscode_pyprof.wire import WireReader
 
 

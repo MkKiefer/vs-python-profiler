@@ -1,6 +1,6 @@
 """Type stubs for CPython 3.15's private ``_remote_debugging`` module.
 
-Only the surface used by ``_vscode_pyprof.tachyon`` and its callers is declared.
+Only the surface used by ``_vscode_pyprof.collector.tachyon`` and its callers is declared.
 """
 
 from typing import final

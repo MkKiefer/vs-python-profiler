@@ -27,7 +27,7 @@ BOOT = "import sys; sys.path.insert(0, sys.argv.pop(1)); from _vscode_pyprof.{mo
 class Client:
     def __init__(self):
         self.proc = subprocess.Popen(
-            [sys.executable, "-I", "-c", BOOT.format(mod="cli", fn="main"), PYDIR, "serve"],
+            [sys.executable, "-I", "-c", BOOT.format(mod="collector.cli", fn="main"), PYDIR, "serve"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,
@@ -126,7 +126,7 @@ def launch_target(client, info, app, *args, options=None):
         [
             sys.executable,
             "-c",
-            BOOT.format(mod="launcher", fn="cli_main"),
+            BOOT.format(mod="target.launcher", fn="cli_main"),
             PYDIR,
             "run",
             os.path.join(APPS, app),
@@ -259,7 +259,7 @@ class E2E(unittest.TestCase):
             env.pop("PYPROF_AGENT", None)
             shim = os.path.join(ROOT, "bin", "pyprof")
             cmd = (
-                [sys.executable, "-c", BOOT.format(mod="launcher", fn="cli_main"), PYDIR] if os.name == "nt" else [shim]
+                [sys.executable, "-c", BOOT.format(mod="target.launcher", fn="cli_main"), PYDIR] if os.name == "nt" else [shim]
             )
             env["PYPROF_PYTHON"] = sys.executable
             # `python app.py` form, like a user would type after `pyprof run`

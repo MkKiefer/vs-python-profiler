@@ -13,15 +13,20 @@ import sys
 import threading
 
 from _vscode_pyprof import PACKAGE_DIR, PROTOCOL_VERSION
-from _vscode_pyprof.agent_injector import AgentInjectionError, AgentInjector
-from _vscode_pyprof.agent_server import AgentConnection, AgentError, AgentListener, AgentServer
-from _vscode_pyprof.funcresolver import FuncResolver
-from _vscode_pyprof.options import CollectorOptions
-from _vscode_pyprof.records import AllocationSite, MemorySnapshot
-from _vscode_pyprof.rpc import RpcError, RpcServer
-from _vscode_pyprof.sampler import Sampler, SamplerFactory, SamplerListener
-from _vscode_pyprof.store import FrameKey, Store
-from _vscode_pyprof.tachyon import Tachyon, TachyonError
+from _vscode_pyprof.collector.agent_link import (
+    AgentConnection,
+    AgentError,
+    AgentInjectionError,
+    AgentInjector,
+    AgentListener,
+    AgentServer,
+)
+from _vscode_pyprof.collector.frames import FuncResolver
+from _vscode_pyprof.collector.options import CollectorOptions
+from _vscode_pyprof.collector.rpc import RpcError, RpcServer
+from _vscode_pyprof.collector.sampler import Sampler, SamplerFactory, SamplerListener
+from _vscode_pyprof.collector.store import AllocationSite, FrameKey, MemorySnapshot, Store
+from _vscode_pyprof.collector.tachyon import Tachyon, TachyonError
 from _vscode_pyprof.wire import JsonObject, WireReader
 
 

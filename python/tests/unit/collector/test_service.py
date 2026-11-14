@@ -6,15 +6,19 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, create_autospec
 
-from _vscode_pyprof.agent_injector import AgentInjectionError, AgentInjector
-from _vscode_pyprof.agent_server import AgentConnection, AgentHello, AgentServer
-from _vscode_pyprof.collector import Collector
-from _vscode_pyprof.frame_classifier import FrameClassifier
-from _vscode_pyprof.funcresolver import FuncResolver
-from _vscode_pyprof.rpc import RpcServer
-from _vscode_pyprof.sampler import Sampler, SamplerFactory
-from _vscode_pyprof.store import Store
-from _vscode_pyprof.tachyon import TachyonError
+from _vscode_pyprof.collector.agent_link import (
+    AgentConnection,
+    AgentHello,
+    AgentInjectionError,
+    AgentInjector,
+    AgentServer,
+)
+from _vscode_pyprof.collector.frames import FrameClassifier, FuncResolver
+from _vscode_pyprof.collector.rpc import RpcServer
+from _vscode_pyprof.collector.sampler import Sampler, SamplerFactory
+from _vscode_pyprof.collector.service import Collector
+from _vscode_pyprof.collector.store import Store
+from _vscode_pyprof.collector.tachyon import TachyonError
 from _vscode_pyprof.wire import JsonObject, WireReader
 
 

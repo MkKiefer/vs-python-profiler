@@ -9,4 +9,4 @@ elif [ -n "$CONDA_PREFIX" ] && [ -x "$CONDA_PREFIX/bin/python" ]; then PY=$CONDA
 elif command -v python >/dev/null 2>&1; then PY=python
 else PY=python3
 fi
-exec "$PY" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from _vscode_pyprof.launcher import cli_main; cli_main()' "$DIR/python" "$@"
+exec "$PY" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from _vscode_pyprof.target.launcher import cli_main; cli_main()' "$DIR/python" "$@"

@@ -1,7 +1,7 @@
 [project]
 name = "vscode-pyprof-collector"
 version = "0.1.0"
-description = "Collector, launcher and in-process agent of the Python Profiler VS Code extension"
+description = "Collector (collector/) and in-program launcher and agent (target/) of the Python Profiler VS Code extension"
 requires-python = ">=3.15"
 dependencies = []
 
@@ -34,9 +34,11 @@ line-length = 120
 # a clear "Python 3.15 required" error), so they must stay valid on Python 3.10.
 [tool.ruff.per-file-target-version]
 "_vscode_pyprof/__init__.py" = "py310"
-"_vscode_pyprof/cli.py" = "py310"
-"_vscode_pyprof/launcher.py" = "py310"
 "_vscode_pyprof/processes.py" = "py310"
+"_vscode_pyprof/collector/__init__.py" = "py310"
+"_vscode_pyprof/collector/cli.py" = "py310"
+"_vscode_pyprof/target/__init__.py" = "py310"
+"_vscode_pyprof/target/launcher.py" = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC"]

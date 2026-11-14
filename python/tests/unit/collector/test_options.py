@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.options import CollectorOptions
+from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.wire import WireReader
 
 

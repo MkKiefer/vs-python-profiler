@@ -25,7 +25,7 @@ export interface ProcInfo {
 
 type ProcessItem = vscode.QuickPickItem & { process?: ProcInfo };
 
-const OWN_PROCESS_MARKERS = ['_vscode_pyprof.cli', 'processes.py'];
+const OWN_PROCESS_MARKERS = ['_vscode_pyprof.collector.cli', 'processes.py'];
 const LIST_TIMEOUT_MS = 20_000;
 
 export class ProcessPicker {

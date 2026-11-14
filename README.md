@@ -58,17 +58,22 @@ VS Code extension host (TypeScript, src/extension)        Webview dashboard (Vue
  │
  │ JSON-lines RPC over stdio            contract: src/shared/protocol.ts
  ▼
-Collector  (python -I, *target's* interpreter, stdlib only)  python/_vscode_pyprof/
- ├ cli.py            entry point and composition root
- ├ collector.py      the RPC API; owns sampler, agent connection and store
- ├ sampler.py        fixed-rate sampling loop: stacks, async stacks, task graph, GC, RSS/CPU, children
- ├ tachyon.py        the only module that touches _remote_debugging
- ├ store.py          interned frames + stack prefix tree + columnar samples → deltas / .pyprof
- ├ frame_classifier.py · funcresolver.py · procstats.py · options.py · records.py · wire.py · rpc.py
- ├ agent_server.py ◄── localhost TCP + token ──► agent.py (inside the target)
- │   agent_injector.py (sys.remote_exec)         tracemalloc, loop-lag probe, asyncio debug, object counts
- ├ launcher.py       runs your program in *your* environment (runpy), starts the agent
- └ processes.py      standalone script: lists Python processes
+python/_vscode_pyprof/
+ ├ collector/          runs in the collector process (python -I, *target's* interpreter, stdlib only)
+ │ ├ cli.py            entry point and composition root
+ │ ├ service.py        the RPC API (Collector); owns sampler, agent link and store
+ │ ├ rpc.py · options.py   JSON-lines RPC over stdio · session options
+ │ ├ sampler.py        fixed-rate sampling loop (stacks, async stacks, task graph, GC, children) + RSS/CPU readers
+ │ ├ tachyon.py        the only module that touches _remote_debugging
+ │ ├ store.py          interned frames + stack prefix tree + columnar samples → deltas / .pyprof; its records
+ │ ├ frames.py         file → category (user / library / stdlib / internal), (file, line) → function name
+ │ └ agent_link.py     starts the agent in a running program (sys.remote_exec) and accepts its connection
+ │                       ▲ localhost TCP + token
+ ├ target/             runs *inside the profiled program*; imports nothing from collector/
+ │ ├ launcher.py       `pyprof run`: runs your program in *your* environment (runpy), starts the agent
+ │ └ agent.py          tracemalloc, loop-lag probe, asyncio debug, object counts → agent_link
+ ├ wire.py             typed JSON access, shared by collector/ and target/
+ └ processes.py        standalone script (any Python): lists Python processes
 ```
 
 - **One data model.** The collector's store and the TypeScript `ProfileModel`
@@ -79,6 +84,9 @@ Collector  (python -I, *target's* interpreter, stdlib only)  python/_vscode_pypr
   extension ⇄ collector, terminal launcher → extension) is declared in
   `src/shared/protocol.ts`; the Python side validates incoming JSON once, at the
   boundary, through `wire.WireReader`.
+- **Two sides, kept apart.** `collector/` observes the program from outside;
+  `target/` is everything that runs inside it, so it imports only `wire.py` and the
+  package root (`tests/unit/target/test_isolation.py` fails if that changes).
 - **Private API, isolated.** `_remote_debugging` is CPython-internal, so only
   `tachyon.py` touches it, with fallbacks for changed signatures. Its types are
   declared in `python/stubs/`.
@@ -113,7 +121,7 @@ pdm run test:integration   # collector end-to-end: launch, attach+inject, memory
 | `test/*.test.ts` | profile model and exporters against recorded profiles (`test/fixtures`), launch-config parsing, formatting, and an activation smoke test that loads the extension against a stub of the VS Code API |
 | `test/webview/*.spec.ts` | the dashboard: every spec mounts the whole app (real router and stores) over `MockHostClient` through `mountApp(path, …)`; `smoke.spec.ts` opens every route with every fixture, saved and live, and any Vue warning or console error fails a test; feature specs drive tabs, commands, filters and live updates; unit specs cover the host client, persisted state and insights |
 | `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `PYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`PYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
-| `python/tests/unit/` | one test module per source module of the collector; no target process needed |
+| `python/tests/unit/` | mirrors the package (`collector/`, `target/`): one test module per source module, plus `target/test_isolation.py`, which fails if code that runs inside the profiled program starts importing collector code; no target process needed |
 | `python/tests/integration/` | drives a real collector over stdio exactly like the extension, profiling the programs in `test-apps/` |
 
 Press **F5** ("Run Extension") to open an Extension Development Host on `test-apps/`
@@ -142,11 +150,11 @@ the collector's own Python 3.15 process:
 
 | Exception | Where | Why |
 |---|---|---|
-| Lazy imports inside functions | `agent.py` (`asyncio`, `tracemalloc`, `logging`, `warnings`, `gc`), `launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*. Importing modules the program does not use itself would slow it down, show up in its profile, and break the agent's "does this program use asyncio?" check. |
-| Imports after a version check | `cli.py`, `launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
-| Python 3.10-compatible syntax | `__init__.py`, `cli.py`, `launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
+| Lazy imports inside functions | `target/agent.py` (`asyncio`, `tracemalloc`, `logging`, `warnings`, `gc`), `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*. Importing modules the program does not use itself would slow it down, show up in its profile, and break the agent's "does this program use asyncio?" check. |
+| Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
+| Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |
-| Module-level entry points | `cli.main`, `launcher.cli_main`, `agent.start` | Called by name from the shell shims and from `sys.remote_exec`; they only delegate to a class. |
+| Module-level entry points | `collector.cli.main`, `target.launcher.cli_main`, `target.agent.start` | Called by name from the shell shims and from `sys.remote_exec`; they only delegate to a class. |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
 
 The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of

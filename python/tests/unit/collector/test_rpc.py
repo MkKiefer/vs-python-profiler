@@ -3,7 +3,7 @@ import json
 import threading
 import unittest
 
-from _vscode_pyprof.rpc import RpcError, RpcServer
+from _vscode_pyprof.collector.rpc import RpcError, RpcServer
 from _vscode_pyprof.wire import JsonObject, WireReader
 
 

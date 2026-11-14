@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 
-from _vscode_pyprof.procstats import (
+from _vscode_pyprof.collector.sampler import (
     LinuxProcessStatsReader,
     ProcessStatsReader,
     PsProcessStatsReader,
