@@ -5,7 +5,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-from _vscode_pyprof.target.launcher import Launcher, LauncherError, Target
+from _vscode_pyprof.target.launcher import Launcher, LauncherError, Target, TargetKind
 
 
 class TestTargetParse(unittest.TestCase):
@@ -19,12 +19,12 @@ class TestTargetParse(unittest.TestCase):
     def test_parse_with_module_flag_returns_module_target(self) -> None:
         target = Target.parse(["-m", "mypkg.cli", "--verbose"])
 
-        self.assertEqual(target, Target(Target.MODULE, "mypkg.cli", ["--verbose"]))
+        self.assertEqual(target, Target(TargetKind.MODULE, "mypkg.cli", ["--verbose"]))
 
     def test_parse_with_script_path_returns_path_target(self) -> None:
         target = Target.parse([self.script, "--port", "8000"])
 
-        self.assertEqual(target, Target(Target.PATH, self.script, ["--port", "8000"]))
+        self.assertEqual(target, Target(TargetKind.PATH, self.script, ["--port", "8000"]))
 
     def test_parse_with_nothing_to_run_raises_launcher_error(self) -> None:
         with self.assertRaises(LauncherError) as ctx:

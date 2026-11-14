@@ -12,7 +12,7 @@ import traceback
 from collections.abc import Callable
 from typing import BinaryIO
 
-from _vscode_pyprof.wire import JsonObject, WireError, WireReader
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireReader
 
 type RpcHandler = Callable[[WireReader], object]
 
@@ -77,7 +77,7 @@ class RpcServer:
             self._send({"id": request_id, "result": result})
 
     def _send(self, message: JsonObject) -> None:
-        data = (json.dumps(message, separators=(",", ":"), default=str) + "\n").encode("utf-8")
+        data = JsonLines.encode(message, fallback=str)
         with self._write_lock:
             try:
                 self._out.write(data)

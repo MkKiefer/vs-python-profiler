@@ -20,6 +20,7 @@ import runpy
 import sys
 import time
 from dataclasses import dataclass
+from enum import Enum
 
 from _vscode_pyprof import MIN_PYTHON, PACKAGE_DIR
 
@@ -28,16 +29,20 @@ class LauncherError(Exception):
     """A problem the user has to fix; shown as ``pyprof: <message>``."""
 
 
+class TargetKind(Enum):
+    MODULE = "module"
+    """Run like ``python -m name``."""
+    PATH = "path"
+    """Run like ``python name``."""
+
+
 @dataclass(frozen=True)
 class Target:
-    """What to run: a module (``python -m name``) or a script path."""
+    """What to run: a module or a script path, and its arguments."""
 
-    kind: str
+    kind: TargetKind
     name: str
     args: list[str]
-
-    MODULE = "module"
-    PATH = "path"
 
     @classmethod
     def parse(cls, argv: list[str]) -> "Target":
@@ -47,10 +52,10 @@ class Target:
         if argv[0] == "-m":
             if len(argv) < 2:
                 raise LauncherError("-m requires a module name")
-            return cls(cls.MODULE, argv[1], argv[2:])
+            return cls(TargetKind.MODULE, argv[1], argv[2:])
         if not os.path.exists(argv[0]):
             raise LauncherError(f"cannot find {argv[0]!r}")
-        return cls(cls.PATH, argv[0], argv[1:])
+        return cls(TargetKind.PATH, argv[0], argv[1:])
 
 
 class Launcher:
@@ -73,7 +78,7 @@ class Launcher:
         self._start_agent(agent_address, options)
         self._restore_sys_path()
         sys.argv = [target.name, *target.args]
-        if target.kind == Target.MODULE:
+        if target.kind is TargetKind.MODULE:
             sys.path.insert(0, os.getcwd())
             runpy._run_module_as_main(target.name, alter_argv=True)  # what `python -m` does
         else:
@@ -124,8 +129,10 @@ class Launcher:
         # Imported only after the version check: the agent needs Python 3.15.
         from _vscode_pyprof.target import agent
 
-        host, port, token = agent_address.rsplit(":", 2)
-        started = agent.start(host, int(port), token, options)
+        try:
+            started = agent.start(agent_address, options)
+        except ValueError as error:  # a malformed PYPROF_AGENT
+            raise LauncherError(str(error)) from None
         # Give the agent a moment to connect so the collector starts sampling
         # before user code runs (bounded; never blocks startup for long).
         deadline = time.monotonic() + self._AGENT_CONNECT_TIMEOUT

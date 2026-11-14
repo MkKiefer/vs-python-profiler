@@ -4,8 +4,7 @@ import sys
 import tempfile
 import unittest
 
-from _vscode_pyprof.processes import ProcessLister
-from _vscode_pyprof.wire import WireReader
+from _vscode_pyprof.processes import ProcessLister, PythonProcess
 
 
 class TestProcessLister(unittest.TestCase):
@@ -59,16 +58,46 @@ class TestProcessLister(unittest.TestCase):
         self.addCleanup(child.communicate)
         self.addCleanup(child.kill)
 
-        records = [WireReader(record) for record in self.lister.list_processes()]
+        found = [process for process in self.lister.list_processes() if process.pid == child.pid]
 
-        found = [record for record in records if record.get_int("pid") == child.pid]
         self.assertEqual(len(found), 1, msg=f"child {child.pid} not listed")
-        self.assertIn("marker-arg", found[0].get_str_list("argv"))
+        self.assertIn("marker-arg", found[0].argv)
 
     def test_list_processes_excludes_own_process(self) -> None:
-        pids = [WireReader(record).get_int("pid") for record in self.lister.list_processes()]
+        pids = [process.pid for process in self.lister.list_processes()]
 
         self.assertNotIn(os.getpid(), pids)
+
+
+class TestPythonProcess(unittest.TestCase):
+    def test_to_wire_uses_extension_field_names(self) -> None:
+        process = PythonProcess(
+            pid=10,
+            parent_pid=1,
+            executable="/venv/bin/python",
+            real_executable="/usr/bin/python3.15",
+            version="3.15",
+            venv="/venv",
+            argv=["python", "app.py"],
+            title="python app.py",
+            cwd="/work",
+        )
+
+        self.assertDictEqual(
+            process.to_wire(),
+            {
+                "pid": 10,
+                "ppid": 1,
+                "executable": "/venv/bin/python",
+                "realExecutable": "/usr/bin/python3.15",
+                "version": "3.15",
+                "venv": "/venv",
+                "argv": ["python", "app.py"],
+                "title": "python app.py",
+                "cwd": "/work",
+                "isLauncher": False,
+            },
+        )
 
 
 if __name__ == "__main__":

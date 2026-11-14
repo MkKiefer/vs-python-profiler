@@ -103,7 +103,7 @@ export interface AttachResult {
   injectError: string | null;
 }
 
-/** Request/response pairs of the collector RPC (see `python/_vscode_pyprof/collector.py`). */
+/** Request/response pairs of the collector RPC (see `python/_vscode_pyprof/collector/session.py`; names mirrored in `collector/protocol.py`). */
 export interface CollectorRequests {
   initialize: { params: { options: CollectorOptions; label?: string }; result: InitializeResult };
   attach: { params: { pid: number; inject: boolean }; result: AttachResult };

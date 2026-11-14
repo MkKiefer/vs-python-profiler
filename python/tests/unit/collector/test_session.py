@@ -6,40 +6,48 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, create_autospec
 
-from _vscode_pyprof.collector.agent_link import (
-    AgentConnection,
-    AgentHello,
-    AgentInjectionError,
-    AgentInjector,
-    AgentServer,
-)
-from _vscode_pyprof.collector.frames import FrameClassifier, FuncResolver
+from _vscode_pyprof.collector.agent.connection import AgentConnection
+from _vscode_pyprof.collector.agent.hello import AgentHello
+from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
+from _vscode_pyprof.collector.agent.server import AgentServer
+from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
+from _vscode_pyprof.collector.frames.func_resolver import FuncResolver
+from _vscode_pyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
+from _vscode_pyprof.collector.profile_writer import ProfileWriter
+from _vscode_pyprof.collector.protocol import StopReason
 from _vscode_pyprof.collector.rpc import RpcServer
-from _vscode_pyprof.collector.sampler import Sampler, SamplerFactory
-from _vscode_pyprof.collector.service import Collector
-from _vscode_pyprof.collector.store import Store
-from _vscode_pyprof.collector.tachyon import TachyonError
-from _vscode_pyprof.wire import JsonObject, WireReader
+from _vscode_pyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
+from _vscode_pyprof.collector.sampling.sampler import Sampler
+from _vscode_pyprof.collector.sampling.sampler_factory import SamplerFactory
+from _vscode_pyprof.collector.sampling.tachyon import TachyonError
+from _vscode_pyprof.collector.session import CollectorSession
+from _vscode_pyprof.collector.store.session_clock import SessionClock
+from _vscode_pyprof.collector.store.stack_table import StackTable
+from _vscode_pyprof.collector.store.store import Store
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireReader
 
 
-class TestCollector(unittest.TestCase):
+class TestCollectorSession(unittest.TestCase):
     def setUp(self) -> None:
         self.output = io.BytesIO()
         self.rpc = RpcServer(io.BytesIO(), self.output)
-        self.store = Store(FrameClassifier.for_running_interpreter())
+        clock = SessionClock()
+        self.store = Store(clock, StackTable(FrameClassifier.for_running_interpreter()))
         self.agent_server = AgentServer()
         self.addCleanup(self.agent_server.close)
         self.injector = AgentInjector()
-        self.sampler_factory = SamplerFactory()
-        self.collector = Collector(
+        self.sampler_factory = SamplerFactory(self.store, clock, ProcessStatsReaderFactory())
+        self.session = CollectorSession(
             rpc=self.rpc,
             store=self.store,
+            clock=clock,
             agent_server=self.agent_server,
             injector=self.injector,
             sampler_factory=self.sampler_factory,
-            resolver=FuncResolver(),
+            snapshot_builder=MemorySnapshotBuilder(self.store, clock, FuncResolver()),
+            profile_writer=ProfileWriter(),
         )
-        self.collector.start()
+        self.session.start()
         self._next_id = 0
 
     # ---------------------------------------------------------------- helpers
@@ -60,8 +68,10 @@ class TestCollector(unittest.TestCase):
     def connect_agent(self) -> AgentConnection:
         """A real connection object on a mocked socket, registered without starting a sampler."""
         self.sampler_factory.create = MagicMock(side_effect=TachyonError("no such process"))
-        connection = AgentConnection(MagicMock(), AgentHello(4242, "python", ["app.py"], "/work", []), self.collector)
-        self.collector.on_agent_hello(connection)
+        connection = AgentConnection(
+            MagicMock(), AgentHello(4242, "python", ["app.py"], "/work", []), self.session, JsonLines()
+        )
+        self.session.on_agent_hello(connection)
         return connection
 
     # ------------------------------------------------------------------ tests
@@ -183,7 +193,7 @@ class TestCollector(unittest.TestCase):
             "events": [{"kind": "slow-callback", "message": "took 0.2s", "seconds": 0.2}],
         }
 
-        self.collector.on_agent_message(connection, WireReader(metrics))
+        self.session.on_agent_message(connection, WireReader(metrics))
 
         full = WireReader(self.store.full())
         tracks = full.get_object("tracks")
@@ -195,7 +205,7 @@ class TestCollector(unittest.TestCase):
     def test_agent_close_notifies_extension(self) -> None:
         connection = self.connect_agent()
 
-        self.collector.on_agent_close(connection)
+        self.session.on_agent_close(connection)
 
         self.assertFalse(self.notifications("agent")[-1].get_bool("connected", True))
 
@@ -223,12 +233,12 @@ class TestCollector(unittest.TestCase):
         self.assertEqual((result.get_str("state"), result.get_bool("agent", True)), ("idle", False))
 
     def test_on_target_exit_notifies_exited_state(self) -> None:
-        self.collector.on_target_exit("exited")
+        self.session.on_target_exit(StopReason.EXITED)
 
         self.assertEqual(self.notifications("state")[-1].to_dict(), {"state": "exited", "reason": "exited"})
 
     def test_on_children_notifies_child_pids(self) -> None:
-        self.collector.on_children([11, 12])
+        self.session.on_children([11, 12])
 
         self.assertEqual(self.notifications("children")[0].get_list("pids"), [11, 12])
 

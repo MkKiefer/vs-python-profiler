@@ -13,6 +13,39 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PythonProcess:
+    """One running Python interpreter. Mirror of ``ProcInfo`` in ``src/extension/processes.ts``."""
+
+    pid: int
+    parent_pid: int
+    executable: str
+    real_executable: str
+    version: str | None
+    """``major.minor`` if it can be told without running the interpreter."""
+    venv: str | None
+    argv: list[str]
+    title: str
+    cwd: str | None
+    is_launcher: bool = False
+    """A Windows venv launcher stub: the real interpreter is its child."""
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "pid": self.pid,
+            "ppid": self.parent_pid,
+            "executable": self.executable,
+            "realExecutable": self.real_executable,
+            "version": self.version,
+            "venv": self.venv,
+            "argv": self.argv,
+            "title": self.title,
+            "cwd": self.cwd,
+            "isLauncher": self.is_launcher,
+        }
 
 
 class ProcessLister:
@@ -22,8 +55,8 @@ class ProcessLister:
     _VERSION_IN_NAME = re.compile(r"python(\d)\.(\d+)", re.IGNORECASE)
     _TITLE_LIMIT = 300
 
-    def list_processes(self) -> list[dict[str, object]]:
-        """One record per Python process; empty if the platform cannot be inspected."""
+    def list_processes(self) -> list[PythonProcess]:
+        """Every running Python process except this one; empty if the platform cannot be inspected."""
         try:
             if sys.platform.startswith("linux"):
                 return self._list_linux()
@@ -67,8 +100,7 @@ class ProcessLister:
             pass
         return None
 
-    # ------------------------------------------------------------- platforms
-    def _list_linux(self) -> list[dict[str, object]]:
+    def _list_linux(self) -> list[PythonProcess]:
         own_pid = os.getpid()
         records = []
         for name in os.listdir("/proc"):
@@ -90,14 +122,11 @@ class ProcessLister:
             except (OSError, ValueError, IndexError):
                 parent_pid = 0
             launched = argv[0] if os.path.isabs(argv[0]) else executable
-            records.append(
-                self._record(
-                    pid, parent_pid, launched or executable, executable, argv, self._read_link(f"/proc/{pid}/cwd")
-                )
-            )
+            cwd = self._read_link(f"/proc/{pid}/cwd")
+            records.append(self._process(pid, parent_pid, launched or executable, executable, argv, cwd))
         return records
 
-    def _list_macos(self) -> list[dict[str, object]]:
+    def _list_macos(self) -> list[PythonProcess]:
         result = subprocess.run(
             ["ps", "-axww", "-o", "pid=,ppid=,comm=,args="],
             capture_output=True,
@@ -116,10 +145,10 @@ class ProcessLister:
                 continue
             argv = (parts[3] if len(parts) > 3 else command).split()
             real = os.path.realpath(command) if os.path.isabs(command) else command
-            records.append(self._record(pid, parent_pid, command, real, argv, None))
+            records.append(self._process(pid, parent_pid, command, real, argv, None))
         return records
 
-    def _list_windows(self) -> list[dict[str, object]]:
+    def _list_windows(self) -> list[PythonProcess]:
         query = (
             "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
             "Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress"
@@ -145,28 +174,34 @@ class ProcessLister:
                 continue
             executable = row.get("ExecutablePath") or ""
             argv = self._split_windows_command_line(row.get("CommandLine") or executable)
-            record = self._record(pid, parent_pid, executable, executable, argv, None)
             # venv launchers on Windows spawn the real interpreter as a child
-            record["isLauncher"] = pid in parent_pids and self.venv_of(executable) is not None
-            records.append(record)
+            is_launcher = pid in parent_pids and self.venv_of(executable) is not None
+            records.append(self._process(pid, parent_pid, executable, executable, argv, None, is_launcher))
         return records
 
-    # --------------------------------------------------------------- helpers
-    def _record(
-        self, pid: int, parent_pid: int, executable: str, real_executable: str, argv: list[str], cwd: str | None
-    ) -> dict[str, object]:
+    def _process(
+        self,
+        pid: int,
+        parent_pid: int,
+        executable: str,
+        real_executable: str,
+        argv: list[str],
+        cwd: str | None,
+        is_launcher: bool = False,
+    ) -> PythonProcess:
         title = " ".join(os.path.basename(arg) if i == 0 else arg for i, arg in enumerate(argv))
-        return {
-            "pid": pid,
-            "ppid": parent_pid,
-            "executable": executable,
-            "realExecutable": real_executable,
-            "version": self.guess_version(executable, real_executable),
-            "venv": self.venv_of(executable),
-            "argv": argv,
-            "title": title[: self._TITLE_LIMIT],
-            "cwd": cwd,
-        }
+        return PythonProcess(
+            pid=pid,
+            parent_pid=parent_pid,
+            executable=executable,
+            real_executable=real_executable,
+            version=self.guess_version(executable, real_executable),
+            venv=self.venv_of(executable),
+            argv=argv,
+            title=title[: self._TITLE_LIMIT],
+            cwd=cwd,
+            is_launcher=is_launcher,
+        )
 
     @staticmethod
     def _read_link(path: str) -> str | None:
@@ -184,4 +219,4 @@ class ProcessLister:
 
 
 if __name__ == "__main__":
-    json.dump(ProcessLister().list_processes(), sys.stdout)
+    json.dump([process.to_wire() for process in ProcessLister().list_processes()], sys.stdout)

@@ -58,18 +58,27 @@ VS Code extension host (TypeScript, src/extension)        Webview dashboard (Vue
 python/_vscode_pyprof/
  ├ collector/          runs in the collector process (python -I, *target's* interpreter, stdlib only)
  │ ├ cli.py            entry point and composition root
- │ ├ service.py        the RPC API (Collector); owns sampler, agent link and store
+ │ ├ session.py        the RPC API (CollectorSession); ties sampler, agent link and store together
+ │ ├ protocol.py       names of the RPC methods, notifications and session states (mirror of protocol.ts)
  │ ├ rpc.py · options.py   JSON-lines RPC over stdio · session options
- │ ├ sampler.py        fixed-rate sampling loop (stacks, async stacks, task graph, GC, children) + RSS/CPU readers
- │ ├ tachyon.py        the only module that touches _remote_debugging
- │ ├ store.py          interned frames + stack prefix tree + columnar samples → deltas / .pyprof; its records
- │ ├ frames.py         file → category (user / library / stdlib / internal), (file, line) → function name
- │ └ agent_link.py     starts the agent in a running program (sys.remote_exec) and accepts its connection
+ │ ├ memory_snapshot_builder.py · profile_writer.py   agent snapshot reply → stored snapshot · .pyprof files
+ │ ├ sampling/         sampler.py (fixed-rate loop: stacks, async stacks, task graph, children), gc_recorder.py,
+ │ │                   sampler_factory.py, process_stats.py + one RSS/CPU reader per OS,
+ │ │                   tachyon.py - the only module that touches _remote_debugging
+ │ ├ store/            store.py (thread-safe facade → deltas / .pyprof) over stack_table.py (interned frames +
+ │ │                   stack prefix tree), sample_columns.py, task_table.py, memory_snapshot.py, append_log.py,
+ │ │                   session_clock.py, track.py, sampling_stats.py
+ │ ├ frames/           frame_classifier.py (file → user / library / stdlib / internal),
+ │ │                   func_resolver.py ((file, line) → function name)
+ │ └ agent/            server.py (accepts the agent, token check), connection.py (requests, messages),
+ │                     injector.py (sys.remote_exec), hello.py · metrics.py · thread_name.py (typed messages)
  │                       ▲ localhost TCP + token
  ├ target/             runs *inside the profiled program*; imports nothing from collector/
  │ ├ launcher.py       Run with Profiler: runs your program in *your* environment (runpy), starts the agent
- │ └ agent.py          tracemalloc, loop-lag probe, asyncio debug, object counts → agent_link
- ├ wire.py             typed JSON access, shared by collector/ and target/
+ │ ├ agent.py          the agent thread: connects back, serves commands, reports metrics
+ │ └ memory_probe.py · loop_monitor.py · asyncio_debug.py   tracemalloc + object counts · loop lag · debug events
+ ├ agent_protocol.py   collector ⇄ agent contract: message types, commands, event kinds, address
+ ├ wire.py             typed JSON access and JSON-lines framing, shared by collector/ and target/
  └ processes.py        standalone script (any Python): lists Python processes
 ```
 
@@ -82,10 +91,10 @@ python/_vscode_pyprof/
   `src/shared/protocol.ts`; the Python side validates incoming JSON once, at the
   boundary, through `wire.WireReader`.
 - **Two sides, kept apart.** `collector/` observes the program from outside;
-  `target/` is everything that runs inside it, so it imports only `wire.py` and the
-  package root (`tests/unit/target/test_isolation.py` fails if that changes).
+  `target/` is everything that runs inside it, so it imports only `wire.py`,
+  `agent_protocol.py` and the package root (`tests/unit/target/test_isolation.py` fails if that changes).
 - **Private API, isolated.** `_remote_debugging` is CPython-internal, so only
-  `tachyon.py` touches it, with fallbacks for changed signatures. Its types are
+  `sampling/tachyon.py` touches it, with fallbacks for changed signatures. Its types are
   declared in `python/stubs/`.
 - **The dashboard is a Vue app.** `src/webview` is Vue 3 (`<script setup>`), Pinia,
   Vue Router and Tailwind, built by Vite into `dist/webview.js` + `dist/webview.css`:
@@ -127,7 +136,7 @@ pdm run test:integration   # collector end-to-end: launch, attach+inject, memory
 | `test/*.test.ts` | profile model and exporters against recorded profiles (`test/fixtures`), launch-config parsing, formatting, and an activation smoke test that loads the extension against a stub of the VS Code API |
 | `test/webview/*.spec.ts` | the dashboard: every spec mounts the whole app (real router and stores) over `MockHostClient` through `mountApp(path, …)`; `smoke.spec.ts` opens every route with every fixture, saved and live, and any Vue warning or console error fails a test; feature specs drive tabs, commands, filters and live updates; unit specs cover the host client, persisted state and insights |
 | `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `PYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`PYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
-| `python/tests/unit/` | mirrors the package (`collector/`, `target/`): one test module per source module, plus `target/test_isolation.py`, which fails if code that runs inside the profiled program starts importing collector code; no target process needed |
+| `python/tests/unit/` | mirrors the package (`collector/…`, `target/`): one test module per source module, plus `target/test_isolation.py`, which fails if code that runs inside the profiled program starts importing collector code; no target process needed |
 | `python/tests/integration/` | drives a real collector over stdio exactly like the extension, profiling the programs in `test-apps/` |
 
 Press **F5** ("Run Extension") to open an Extension Development Host on `test-apps/`
@@ -156,11 +165,13 @@ the collector's own Python 3.15 process:
 
 | Exception | Where | Why |
 |---|---|---|
-| Imports inside functions | `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; `target/agent.py` and `collector/store.py` use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). |
+| Imports inside functions | `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; the agent modules (`target/agent.py`, `memory_probe.py`, `loop_monitor.py`, `asyncio_debug.py`) use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). `collector/store/` and `collector/agent/listener.py` use `lazy` imports for names that only appear in annotations (the private `_remote_debugging` types; a circular reference). |
 | Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
 | Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only; `WireReader` does the one-time validation instead. |
 | Module-level entry points | `collector.cli.main`, `target.launcher.main`, `target.agent.start` | Called by name from the extension's `python -c` bootstraps and from `sys.remote_exec`; they only delegate to a class. |
+| Plain class instead of a dataclass | `agent_protocol.AgentAddress`, `target/loop_monitor._LoopProbe` | They are loaded into the profiled program; `dataclasses` pulls in `inspect` and friends, which an attached program may not use itself. |
+| JSON objects as `dict[str, object]` | `Store.delta()` / `full()`, RPC results, agent messages | The type-safe spelling of JSON at the wire edge. Everything read from the wire goes through `WireReader` into a dataclass (`AgentHello`, `AgentMetrics`, `CollectorOptions`, …); names with a fixed set of values are enums (`RpcMethod`, `AgentCommand`, `Track`, `TaskState`, …). |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
 
 The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of

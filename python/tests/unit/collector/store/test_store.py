@@ -2,8 +2,12 @@ import os
 import unittest
 from _remote_debugging import AwaitedInfo, CoroInfo, FrameInfo, InterpreterInfo, LocationInfo, TaskInfo, ThreadInfo
 
-from _vscode_pyprof.collector.frames import FrameCategory, FrameClassifier
-from _vscode_pyprof.collector.store import AllocationSite, MemorySnapshot, SampleColumns, Store, TaskRecord
+from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
+from _vscode_pyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
+from _vscode_pyprof.collector.store.session_clock import SessionClock
+from _vscode_pyprof.collector.store.stack_table import StackTable
+from _vscode_pyprof.collector.store.store import Store
+from _vscode_pyprof.collector.store.track import Track
 from _vscode_pyprof.wire import WireReader
 
 ROOT = os.path.abspath(os.sep)
@@ -16,7 +20,7 @@ AGENT = os.path.join(INTERNAL_DIR, "agent.py")
 class StoreTestCase(unittest.TestCase):
     def setUp(self) -> None:
         classifier = FrameClassifier([os.path.join(ROOT, "py", "lib")], [], INTERNAL_DIR)
-        self.store = Store(classifier)
+        self.store = Store(SessionClock(), StackTable(classifier))
 
     @staticmethod
     def frame(filename: str, funcname: str, line: int) -> FrameInfo:
@@ -41,37 +45,7 @@ class StoreTestCase(unittest.TestCase):
         return names[::-1]
 
 
-class TestStoreInterning(StoreTestCase):
-    def test_intern_path_with_same_frames_returns_same_stack(self) -> None:
-        path = [(APP, "main", 1), (APP, "work", 5)]
-
-        first = self.store.intern_path(path)
-        second = self.store.intern_path(path)
-
-        self.assertEqual(first, second)
-
-    def test_intern_path_with_shared_prefix_reuses_parent_stack(self) -> None:
-        self.store.intern_path([(APP, "main", 1), (APP, "a", 5)])
-        self.store.intern_path([(APP, "main", 1), (APP, "b", 9)])
-
-        delta = WireReader(self.store.delta())
-
-        self.assertEqual(len(delta.get_list("frames")), 3)
-        self.assertEqual(delta.get_list("stacks"), [[-1, 0], [0, 1], [0, 2]])
-
-    def test_intern_path_with_empty_path_returns_no_stack(self) -> None:
-        self.assertEqual(self.store.intern_path([]), Store.NO_STACK)
-
-    def test_intern_path_records_frame_category(self) -> None:
-        self.store.intern_path([(APP, "main", 1), ("<native>", "<native>", 0)])
-
-        frames = WireReader(self.store.delta()).get_list("frames")
-
-        self.assertEqual(
-            frames,
-            [[APP, "main", 1, int(FrameCategory.USER)], ["<native>", "<native>", 0, int(FrameCategory.SYNTHETIC)]],
-        )
-
+class TestStoreTracebacks(StoreTestCase):
     def test_intern_traceback_with_strip_launcher_drops_bootstrap_frames(self) -> None:
         self.store.configure(strip_launcher=True)
 
@@ -144,7 +118,7 @@ class TestStoreSamples(StoreTestCase):
         self.store.add_thread_sample(1.0, tick)
         self.store.add_thread_sample(2.0, tick)
 
-        self.assertEqual(self.store.stats()["samples"], 2)
+        self.assertEqual(self.store.stats().samples, 2)
 
     def test_add_async_sample_records_rows_in_async_table(self) -> None:
         self.store.add_async_sample(4.0, [([self.frame(APP, "handler", 7)], 55, 1)])
@@ -157,12 +131,12 @@ class TestStoreSamples(StoreTestCase):
     def test_record_error_increments_error_count(self) -> None:
         self.store.record_error()
 
-        self.assertEqual(self.store.stats()["errors"], 1)
+        self.assertEqual(self.store.stats().errors, 1)
 
     def test_set_sampling_rate_is_reported_in_stats(self) -> None:
         self.store.set_sampling_rate(987.5)
 
-        self.assertEqual(self.store.stats()["rateHz"], 987.5)
+        self.assertEqual(self.store.stats().rate_hz, 987.5)
 
 
 class TestStoreTasks(StoreTestCase):
@@ -224,7 +198,7 @@ class TestStoreTasks(StoreTestCase):
 
 class TestStoreSeriesAndEvents(StoreTestCase):
     def test_add_track_appends_rounded_point(self) -> None:
-        self.store.add_track("rss", 10.004, 2048)
+        self.store.add_track(Track.RSS, 10.004, 2048)
 
         tracks = WireReader(self.store.delta()).get_object("tracks")
 
@@ -267,11 +241,6 @@ class TestStoreSeriesAndEvents(StoreTestCase):
             WireReader(self.store.delta()).get_list("objectCounts"), [{"t": 3.0, "counts": [["dict", 10]]}]
         )
 
-    def test_to_session_ms_converts_perf_counter_difference(self) -> None:
-        origin = self.store.to_session_ms(0.0)
-
-        self.assertAlmostEqual(self.store.to_session_ms(1.5) - origin, 1500.0)
-
 
 class TestStoreDeltas(StoreTestCase):
     def snapshot(self) -> MemorySnapshot:
@@ -290,11 +259,11 @@ class TestStoreDeltas(StoreTestCase):
         )
 
     def test_delta_returns_only_data_added_since_previous_delta(self) -> None:
-        self.store.add_track("rss", 1.0, 100)
-        self.store.intern_path([(APP, "main", 1)])
+        self.store.add_track(Track.RSS, 1.0, 100)
+        self.store.intern_traceback([(APP, "main", 1)])
         self.store.delta()
 
-        self.store.add_track("rss", 2.0, 200)
+        self.store.add_track(Track.RSS, 2.0, 200)
 
         delta = WireReader(self.store.delta())
         self.assertEqual(delta.get_object("tracks").get_list("rss"), [[2.0, 200]])
@@ -320,7 +289,7 @@ class TestStoreDeltas(StoreTestCase):
         self.assertEqual(second.get_list("snapshots"), [])
 
     def test_full_returns_everything_regardless_of_previous_deltas(self) -> None:
-        self.store.add_track("rss", 1.0, 100)
+        self.store.add_track(Track.RSS, 1.0, 100)
         self.store.set_thread_name(1, "MainThread")
         self.store.add_snapshot(self.snapshot())
         self.store.delta()
@@ -335,69 +304,6 @@ class TestStoreDeltas(StoreTestCase):
         full = WireReader(self.store.full())
 
         self.assertEqual((full.get_str("format"), full.get_int("version")), (Store.FORMAT, Store.FORMAT_VERSION))
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class TestTaskRecord(unittest.TestCase):
-    def test_to_wire_uses_model_field_names(self) -> None:
-        record = TaskRecord(task_id=5, name="worker", parent=None, thread=1, start=10.0, stack=3, state="waiting")
-
-        self.assertDictEqual(
-            record.to_wire(),
-            {
-                "id": 5,
-                "name": "worker",
-                "parent": None,
-                "thread": 1,
-                "start": 10.0,
-                "end": None,
-                "stack": 3,
-                "state": "waiting",
-            },
-        )
-
-
-class TestMemorySnapshot(unittest.TestCase):
-    def test_to_wire_flattens_sites_into_entries(self) -> None:
-        snapshot = MemorySnapshot(
-            snapshot_id=1,
-            label="A",
-            t=12.5,
-            total_size=300,
-            total_count=3,
-            other_size=0,
-            other_count=0,
-            traced=400,
-            peak=500,
-            take_ms=1.5,
-            sites=(AllocationSite(stack=4, size=200, count=2), AllocationSite(stack=7, size=100, count=1)),
-        )
-
-        wire = snapshot.to_wire()
-
-        self.assertEqual(wire["entries"], [[4, 200, 2], [7, 100, 1]])
-        self.assertEqual((wire["id"], wire["label"], wire["totalSize"]), (1, "A", 300))
-
-
-class TestSampleColumns(unittest.TestCase):
-    def setUp(self) -> None:
-        self.columns = SampleColumns()
-        self.columns.append(1.0, 11, 0, 3)
-        self.columns.append(2.0, 12, 1, 0)
-
-    def test_len_returns_number_of_samples(self) -> None:
-        self.assertEqual(len(self.columns), 2)
-
-    def test_to_wire_returns_all_columns(self) -> None:
-        self.assertDictEqual(
-            self.columns.to_wire(), {"t": [1.0, 2.0], "tid": [11, 12], "stack": [0, 1], "status": [3, 0]}
-        )
-
-    def test_to_wire_with_start_returns_only_newer_samples(self) -> None:
-        self.assertDictEqual(self.columns.to_wire(1), {"t": [2.0], "tid": [12], "stack": [1], "status": [0]})
 
 
 if __name__ == "__main__":

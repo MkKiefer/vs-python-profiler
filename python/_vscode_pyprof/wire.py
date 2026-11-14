@@ -1,11 +1,13 @@
-"""Typed access to decoded JSON objects.
+"""JSON on the wire: typed access to decoded objects and newline-delimited framing.
 
-Every JSON message (RPC params, agent messages, hub replies) is validated once
+Every JSON message (RPC params, agent messages, agent replies) is validated once
 at the boundary through a ``WireReader`` instead of being passed around as an
-untyped dict.
+untyped dict. ``JsonLines`` is the framing every channel shares: one JSON object
+per line.
 """
 
-from collections.abc import Mapping
+import json
+from collections.abc import Callable, Mapping
 
 type JsonObject = dict[str, object]
 
@@ -79,3 +81,29 @@ class WireReader:
 
     def get_str_list(self, key: str) -> list[str]:
         return [str(item) for item in self.get_list(key)]
+
+
+class JsonLines:
+    """Decodes a byte stream of newline-delimited JSON messages."""
+
+    def __init__(self) -> None:
+        self._buffer = b""
+
+    @staticmethod
+    def encode(message: JsonObject, fallback: Callable[[object], object] | None = None) -> bytes:
+        """One message as a line; ``fallback`` converts values JSON cannot represent."""
+        return (json.dumps(message, separators=(",", ":"), default=fallback) + "\n").encode("utf-8")
+
+    def feed(self, chunk: bytes) -> None:
+        self._buffer += chunk
+
+    def next_message(self) -> WireReader | None:
+        """The next complete message, or ``None`` until more bytes arrive.
+
+        Blank lines are skipped. Raises ``ValueError`` for a line that is not JSON.
+        """
+        while b"\n" in self._buffer:
+            line, self._buffer = self._buffer.split(b"\n", 1)
+            if line.strip():
+                return WireReader.of(json.loads(line))
+        return None
