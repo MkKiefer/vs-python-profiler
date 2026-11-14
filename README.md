@@ -107,17 +107,12 @@ python/_vscode_pyprof/
 
 Requires Node.js `^20.19.0` or `>=22.12.0` (Vite) and, for the collector, Python 3.15.
 
-If Node comes from **nvm**, note that nvm is loaded from `~/.bashrc` only in interactive
-shells: VS Code tasks (`npm: build`, the F5 pre-launch build) run a non-interactive
-`bash -c` and fall back to the system Node, and the build stops with "Node.js … is too
-old". On WSL, let the VS Code server load nvm by adding these lines to
-`~/.vscode-server/server-env-setup`, then restart the server (close all WSL windows,
-or run `wsl --shutdown` from Windows):
-
-```bash
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-```
+If Node comes from **nvm**: nvm is loaded from `~/.bashrc` only in interactive shells,
+and VS Code tasks normally run a non-interactive `bash -c`, so they would get the system
+Node. This project's tasks (`npm: build`, `npm: watch`, the F5 pre-launch build) therefore
+run in `bash -ic` on Linux (`.vscode/tasks.json`). If a build still stops with "Node.js …
+is too old", run it from a terminal, or make the VS Code server itself load nvm (on WSL:
+put the two nvm lines from `~/.bashrc` into `~/.vscode-server/server-env-setup`).
 
 ```bash
 npm install

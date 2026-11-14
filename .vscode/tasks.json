@@ -1,7 +1,24 @@
 {
   "version": "2.0.0",
+  // Shell tasks instead of "type": "npm": on Linux they run in an interactive bash
+  // (`bash -ic`), which reads ~/.bashrc and so picks up an nvm-managed Node. Plain
+  // VS Code tasks would get the system Node, which can be too old for Vite.
   "tasks": [
-    { "type": "npm", "script": "build", "group": "build", "problemMatcher": "$esbuild" },
-    { "type": "npm", "script": "watch", "isBackground": true, "problemMatcher": "$esbuild-watch" }
+    {
+      "label": "npm: build",
+      "type": "shell",
+      "command": "npm run build",
+      "linux": { "options": { "shell": { "executable": "/bin/bash", "args": ["-ic"] } } },
+      "group": "build",
+      "problemMatcher": "$esbuild"
+    },
+    {
+      "label": "npm: watch",
+      "type": "shell",
+      "command": "npm run watch",
+      "linux": { "options": { "shell": { "executable": "/bin/bash", "args": ["-ic"] } } },
+      "isBackground": true,
+      "problemMatcher": "$esbuild-watch"
+    }
   ]
 }
