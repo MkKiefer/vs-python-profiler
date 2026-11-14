@@ -4,7 +4,8 @@
 !dist/webview.css
 !python/_vscode_pyprof/**/*.py
 !bin/**
-!media/**
+!media/icon.png
+!media/activity.svg
 !package.json
 !README.md
 !LICENSE

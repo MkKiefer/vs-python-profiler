@@ -5,6 +5,11 @@
   "version": "0.1.0",
   "publisher": "pyprof",
   "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1b2433",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.95.0",
     "node": "^20.19.0 || >=22.12.0"

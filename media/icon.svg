@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 128 128">
+  <!-- Source of media/icon.png (the extension icon). Re-render at 256x256 after a change,
+       e.g. `inkscape media/icon.svg -w 256 -h 256 -o media/icon.png`. Marketplace icons must be PNG. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2a3c"/>
+      <stop offset="1" stop-color="#121822"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#f76707"/>
+      <stop offset="0.55" stop-color="#fcc419"/>
+      <stop offset="1" stop-color="#fff3bf"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+
+  <!-- flame graph, root at the bottom: warm = your code, teal = libraries -->
+  <rect x="16" y="94" width="96" height="14" rx="3" fill="#d9480f"/>
+  <rect x="16" y="78" width="26" height="14" rx="3" fill="#1098ad"/>
+  <rect x="44" y="78" width="64" height="14" rx="3" fill="#e8590c"/>
+  <rect x="20" y="62" width="16" height="14" rx="3" fill="#22b8cf"/>
+  <rect x="48" y="62" width="38" height="14" rx="3" fill="#f76707"/>
+  <rect x="88" y="62" width="16" height="14" rx="3" fill="#fd7e14"/>
+  <rect x="54" y="46" width="26" height="14" rx="3" fill="#fab005"/>
+
+  <!-- the hot path burns: a flame rising from its top frame -->
+  <g transform="translate(67 44) scale(1.12) translate(-44 -44)">
+    <path d="M44 44
+             C 32 38, 34 26, 41 18
+             C 42 25, 46 27, 48 26
+             C 46 18, 50 11, 56 7
+             C 55 16, 62 21, 62 31
+             C 62 39, 55 44, 44 44 Z"
+          fill="url(#flame)"/>
+    <path d="M46 43 C 41 40, 42 34, 46 30 C 47 34, 51 35, 52 33 C 54 37, 52 42, 46 43 Z" fill="#fff9db" opacity="0.85"/>
+  </g>
+</svg>
