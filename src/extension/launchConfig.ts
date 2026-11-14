@@ -93,3 +93,59 @@ function stringMap(value: unknown): Record<string, string> {
   }
   return out;
 }
+
+/** The ready-made configurations offered when profiling without (or beside) a launch.json, like the Python debugger's. */
+export type DefaultConfigurationKind = 'file' | 'module' | 'fastapi' | 'django' | 'pytest' | 'attach';
+
+export interface DefaultConfigurationChoice {
+  id: DefaultConfigurationKind;
+  label: string;
+  description: string;
+}
+
+export const DEFAULT_CONFIGURATION_CHOICES: readonly DefaultConfigurationChoice[] = [
+  { id: 'file', label: 'Python File', description: 'Profile the currently active Python file' },
+  { id: 'module', label: 'Module', description: "Profile a module with 'python -m'" },
+  { id: 'fastapi', label: 'FastAPI', description: 'Profile a FastAPI app served by uvicorn' },
+  { id: 'django', label: 'Django', description: "Profile 'manage.py runserver'" },
+  { id: 'pytest', label: 'pytest', description: 'Profile the test suite' },
+  { id: 'attach', label: 'Attach to Process', description: 'Profile a running Python process' },
+];
+
+/**
+ * A launch.json-ready `python-profiler` configuration. `detail` is what the kind asks the user for:
+ * the module name, the uvicorn app (`pkg.main:app`) or the manage.py path relative to the workspace folder.
+ */
+export function defaultConfiguration(kind: DefaultConfigurationKind, detail = ''): Record<string, unknown> {
+  const base = { type: 'python-profiler', request: 'launch' };
+  switch (kind) {
+    case 'file':
+      return { name: 'Profile: Current File', ...base, program: '${file}' };
+    case 'module':
+      return { name: `Profile: ${detail}`, ...base, module: detail, args: [] };
+    case 'fastapi':
+      return {
+        name: 'Profile: FastAPI',
+        ...base,
+        module: 'uvicorn',
+        args: [detail, '--port', '8000'],
+        profile: { asyncioDebug: true },
+      };
+    case 'django':
+      return {
+        name: 'Profile: Django',
+        ...base,
+        program: `\${workspaceFolder}/${detail.split('\\').join('/')}`,
+        args: ['runserver', '--noreload'],
+      };
+    case 'pytest':
+      return { name: 'Profile: pytest', ...base, module: 'pytest', args: ['-q'] };
+    case 'attach':
+      return { name: 'Profile: Attach', type: 'python-profiler', request: 'attach', processId: '${command:pyprof.pickProcess}' };
+  }
+}
+
+/** `app/main.py` → `app.main:app`, the uvicorn target for a FastAPI file. */
+export function uvicornTarget(relativePath: string): string {
+  return `${relativePath.replace(/\.py$/, '').split(/[\\/]/).join('.')}:app`;
+}

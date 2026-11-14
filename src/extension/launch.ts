@@ -14,9 +14,10 @@
 import * as vscode from 'vscode';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { DefaultConfigurationPicker } from './defaultConfigurations';
 import { parseDotEnv } from './dotenv';
 import type { EnvironmentResolver } from './environment';
-import { parseLaunchConfig, pytestNodeId, type LaunchConfig } from './launchConfig';
+import { parseLaunchConfig, pytestNodeId, type DefaultConfigurationKind, type LaunchConfig } from './launchConfig';
 import type { ProcessPicker } from './processes';
 import type { SessionManager } from './sessionManager';
 import { settings } from './settings';
@@ -32,7 +33,8 @@ const CURRENT_FILE_CONFIG: vscode.DebugConfiguration = {
   program: '${file}',
 };
 
-type ConfigItem = vscode.QuickPickItem & { folder: vscode.WorkspaceFolder; config: vscode.DebugConfiguration };
+/** A quick pick entry that knows what to do when chosen. */
+type ActionItem = vscode.QuickPickItem & { run?: () => Promise<void> };
 
 const isPythonFile = (uri: vscode.Uri): boolean => uri.scheme === 'file' && uri.fsPath.endsWith('.py');
 
@@ -62,6 +64,7 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     private readonly env: EnvironmentResolver,
     private readonly sessions: SessionManager,
     private readonly picker: ProcessPicker,
+    private readonly defaults = new DefaultConfigurationPicker(),
   ) {}
 
   register(ctx: vscode.ExtensionContext): void {
@@ -75,8 +78,10 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     );
   }
 
-  provideDebugConfigurations(): vscode.DebugConfiguration[] {
-    return [CURRENT_FILE_CONFIG];
+  /** Creating launch.json: ask which default to start with, like the Python debugger does. */
+  async provideDebugConfigurations(folder: vscode.WorkspaceFolder | undefined): Promise<vscode.DebugConfiguration[]> {
+    const config = await this.defaults.pick(folder);
+    return config ? [config] : [];
   }
 
   resolveDebugConfiguration(
@@ -157,26 +162,44 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     });
   }
 
-  /** Pick one of the user's existing launch.json configurations and run it under the profiler. */
+  /**
+   * Pick one of the user's existing launch.json configurations, or a default one (Python file, module, FastAPI,
+   * Django, pytest, attach), and run it under the profiler.
+   */
   async profileConfiguration(): Promise<void> {
-    const items = this.launchConfigurationItems();
-    if (!items.length) {
-      const pick = await vscode.window.showInformationMessage(
-        'No Python launch configurations found in launch.json.',
-        'Profile Current File',
-        'Add Configuration',
-      );
-      if (pick === 'Profile Current File') await this.profileFile();
-      else if (pick) await vscode.commands.executeCommand('debug.addConfiguration');
-      return;
-    }
+    const existing = this.launchConfigurationItems();
+    const items: ActionItem[] = [
+      ...(existing.length ? [{ label: 'launch.json', kind: vscode.QuickPickItemKind.Separator }, ...existing] : []),
+      { label: 'Default configurations', kind: vscode.QuickPickItemKind.Separator },
+      ...this.defaults.items().map((choice) => ({ ...choice, run: () => this.profileDefault(choice.id) })),
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      {
+        label: '$(add) Add Configuration…',
+        description: 'Save a profile configuration to launch.json',
+        run: async () => {
+          await vscode.commands.executeCommand('debug.addConfiguration');
+        },
+      },
+    ];
     const pick = await vscode.window.showQuickPick(items, {
       title: 'Profile a launch configuration',
-      placeHolder: 'Your existing debug configurations run unchanged, with the profiler instead of the debugger',
+      placeHolder: existing.length
+        ? 'Your existing debug configurations run unchanged, with the profiler instead of the debugger'
+        : 'No Python launch configurations in launch.json yet: pick a default one',
       matchOnDescription: true,
     });
-    if (!pick) return;
-    const { config, folder } = pick;
+    await pick?.run?.();
+  }
+
+  private async profileDefault(kind: DefaultConfigurationKind): Promise<void> {
+    if (kind === 'file') return this.profileFile();
+    const editorUri = vscode.window.activeTextEditor?.document.uri;
+    const folder = (editorUri && vscode.workspace.getWorkspaceFolder(editorUri)) ?? vscode.workspace.workspaceFolders?.[0];
+    const config = await this.defaults.complete(kind, folder);
+    if (config) await vscode.debug.startDebugging(folder, config);
+  }
+
+  private async profileExisting(folder: vscode.WorkspaceFolder, config: vscode.DebugConfiguration): Promise<void> {
     const parsed = parseLaunchConfig(config);
     if (parsed.request === 'attach' && !parsed.processId) {
       void vscode.window.showWarningMessage(
@@ -192,9 +215,9 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
     });
   }
 
-  private launchConfigurationItems(): ConfigItem[] {
+  private launchConfigurationItems(): ActionItem[] {
     const folders = vscode.workspace.workspaceFolders ?? [];
-    const items: ConfigItem[] = [];
+    const items: ActionItem[] = [];
     for (const folder of folders) {
       const configs =
         vscode.workspace.getConfiguration('launch', folder).get<vscode.DebugConfiguration[]>('configurations') ?? [];
@@ -206,8 +229,7 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
           label: `$(debug-alt) ${config.name}`,
           description: [config.type, [what, ...parsed.args].join(' ')].join(' · '),
           detail: folders.length > 1 ? folder.name : undefined,
-          folder,
-          config,
+          run: () => this.profileExisting(folder, config),
         });
       }
     }

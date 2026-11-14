@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLaunchConfig, pytestNodeId, splitArgs } from '../src/extension/launchConfig';
+import {
+  DEFAULT_CONFIGURATION_CHOICES,
+  defaultConfiguration,
+  parseLaunchConfig,
+  pytestNodeId,
+  splitArgs,
+  uvicornTarget,
+} from '../src/extension/launchConfig';
 
 const LINES = [
   'import x',
@@ -87,4 +94,42 @@ test('parseLaunchConfig without a usable process id leaves it undefined', () => 
 
 test('parseLaunchConfig treats unknown requests as launch', () => {
   assert.equal(parseLaunchConfig({}).request, 'launch');
+});
+
+test('defaultConfiguration module uses the given module name', () => {
+  assert.deepEqual(defaultConfiguration('module', 'mypkg.cli'), {
+    name: 'Profile: mypkg.cli',
+    type: 'python-profiler',
+    request: 'launch',
+    module: 'mypkg.cli',
+    args: [],
+  });
+});
+
+test('defaultConfiguration django points at manage.py under the workspace folder', () => {
+  const config = defaultConfiguration('django', 'site\\manage.py');
+  assert.equal(config.program, '${workspaceFolder}/site/manage.py');
+  assert.deepEqual(config.args, ['runserver', '--noreload']);
+});
+
+test('defaultConfiguration fastapi serves the app with uvicorn', () => {
+  const config = defaultConfiguration('fastapi', 'app.main:app');
+  assert.equal(config.module, 'uvicorn');
+  assert.deepEqual(config.args, ['app.main:app', '--port', '8000']);
+});
+
+test('defaultConfiguration attach picks the process', () => {
+  assert.equal(defaultConfiguration('attach').processId, '${command:pyprof.pickProcess}');
+});
+
+test('defaultConfiguration every choice parses as a launch config', () => {
+  for (const { id: kind } of DEFAULT_CONFIGURATION_CHOICES) {
+    const parsed = parseLaunchConfig(defaultConfiguration(kind, 'x'));
+    assert.equal(parsed.request, kind === 'attach' ? 'attach' : 'launch');
+  }
+});
+
+test('uvicornTarget turns a file path into module:app', () => {
+  assert.equal(uvicornTarget('app/main.py'), 'app.main:app');
+  assert.equal(uvicornTarget('main.py'), 'main:app');
 });

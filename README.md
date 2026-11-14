@@ -19,7 +19,7 @@ is installed into your environment and your code needs no changes.
 | You want to… | Do this |
 |---|---|
 | Profile the current file | ▶ dropdown in the editor title → **Profile Python File** |
-| Reuse an existing debug config (FastAPI, Django, module…) | **Python Profiler: Profile Launch Configuration…** Your `debugpy` configurations run unchanged, with the profiler instead of the debugger |
+| Reuse an existing debug config (FastAPI, Django, module…) | **Python Profiler: Profile Launch Configuration…** Your `debugpy` configurations run unchanged, with the profiler instead of the debugger. Without (or beside) them it offers default configurations like the Python debugger: Python File, Module, FastAPI, Django, pytest, Attach |
 | Write a dedicated config | `launch.json` → *Add Configuration* → **Python Profiler: …** snippets (`"type": "python-profiler"`) |
 | Profile a test | right-click in a test file → **Profile Test at Cursor** |
 | Profile a running process | sidebar **Python Processes**, or **Attach Profiler to Process…** |

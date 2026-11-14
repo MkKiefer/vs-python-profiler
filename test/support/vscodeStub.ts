@@ -112,6 +112,16 @@ export enum DebugConfigurationProviderTriggerKind {
   Initial = 1,
   Dynamic,
 }
+export enum QuickPickItemKind {
+  Separator = -1,
+  Default = 0,
+}
+export class RelativePattern {
+  constructor(
+    readonly base: unknown,
+    readonly pattern: string,
+  ) {}
+}
 
 /** Everything the extension registered, for assertions. */
 export const recorded = {

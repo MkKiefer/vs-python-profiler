@@ -464,15 +464,6 @@
             }
           }
         },
-        "initialConfigurations": [
-          {
-            "name": "Profile: Current File",
-            "type": "python-profiler",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal"
-          }
-        ],
         "configurationSnippets": [
           {
             "label": "Python Profiler: Current File",
