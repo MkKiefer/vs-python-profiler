@@ -40,6 +40,14 @@ export function parseLaunchConfig(raw: Readonly<Record<string, unknown>>): Launc
   };
 }
 
+/**
+ * The path whose interpreter and environment a launch uses. A configuration in a `.code-workspace` file belongs to
+ * no folder (VS Code passes none), so the program or working directory has to say which folder's `.venv` is meant.
+ */
+export function launchResourcePath(config: LaunchConfig, folderPath: string | undefined): string | undefined {
+  return config.program ?? config.cwd ?? folderPath;
+}
+
 /** Find `Class::test_fn` enclosing a line (indent based, good enough for tests). */
 export function pytestNodeId(doc: { lineAt(n: number): { text: string }; lineCount: number }, line: number): string | undefined {
   let fn: string | undefined;

@@ -139,30 +139,61 @@ export class EnvironmentResolver implements vscode.Disposable {
 
   /**
    * Resolve + version gate. Shows actionable guidance instead of failing
-   * silently when the selected interpreter is too old.
+   * silently when the selected interpreter is too old; after the user selects
+   * another interpreter, checks again so the launch goes ahead with it.
    */
   async ensureSupported(resource?: vscode.Uri, explicit?: string): Promise<PythonInfo | undefined> {
-    const info = explicit ? await this.probe(explicit) : await this.resolve(resource);
-    if (!info) {
-      const pick = await vscode.window.showErrorMessage(
-        'No Python interpreter found. Select one with the Python extension first.',
-        'Select Interpreter',
-      );
-      if (pick) await vscode.commands.executeCommand('python.setInterpreter');
-      return undefined;
+    for (;;) {
+      const info = explicit ? await this.probe(explicit) : await this.resolve(resource);
+      if (info && this.isSupported(info)) return info;
+      const selected = info ? await this.offerSupported(info, resource, explicit) : await this.offerInterpreter();
+      if (!selected) return undefined;
     }
-    if (this.isSupported(info)) return info;
-    const actions = ['Select Interpreter', `Create ${MIN_VERSION} venv`, 'Learn More'];
-    const pick = await vscode.window.showWarningMessage(
-      `Profiling needs Python ${MIN_VERSION}+ (Tachyon). The selected interpreter is ${info.label} (${info.executable}).`,
-      ...actions,
+  }
+
+  /** True when the user selected another interpreter, so it is worth checking again. */
+  private async offerInterpreter(): Promise<boolean> {
+    const pick = await vscode.window.showErrorMessage(
+      'No Python interpreter found. Select one with the Python extension first.',
+      'Select Interpreter',
     );
-    if (pick === actions[0]) await vscode.commands.executeCommand('python.setInterpreter');
-    else if (pick === actions[1]) this.createVenv(resource);
-    else if (pick === actions[2]) {
-      await vscode.env.openExternal(vscode.Uri.parse('https://docs.python.org/3.15/library/profiling.sampling.html'));
+    if (!pick) return false;
+    await vscode.commands.executeCommand('python.setInterpreter');
+    return true;
+  }
+
+  /** True when the user selected another interpreter, so it is worth checking again. */
+  private async offerSupported(info: PythonInfo, resource?: vscode.Uri, explicit?: string): Promise<boolean> {
+    const problem = `Profiling needs Python ${MIN_VERSION}+ (Tachyon).`;
+    const learnMore = 'Learn More';
+    if (explicit) {
+      // the launch configuration names the interpreter: selecting another one would not change it
+      const pick = await vscode.window.showWarningMessage(
+        `${problem} The launch configuration's "python" is ${info.label} (${info.executable}).`,
+        learnMore,
+      );
+      if (pick) await this.openDocs();
+      return false;
     }
-    return undefined;
+    const select = 'Select Interpreter';
+    const create = `Create ${MIN_VERSION} venv`;
+    const pick = await vscode.window.showWarningMessage(
+      `${problem} The selected interpreter is ${info.label} (${info.executable}).`,
+      select,
+      create,
+      learnMore,
+    );
+    if (pick === select) {
+      await vscode.commands.executeCommand('python.setInterpreter');
+      return true;
+    }
+    if (pick === create) this.createVenv(resource);
+    else if (pick === learnMore) await this.openDocs();
+    return false;
+  }
+
+  private async openDocs(): Promise<void> {
+    await vscode.env.openExternal(vscode.Uri.parse('https://docs.python.org/3.15/library/profiling.sampling.html'));
   }
 
   private createVenv(resource?: vscode.Uri): void {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_CONFIGURATION_CHOICES,
   defaultConfiguration,
+  launchResourcePath,
   parseLaunchConfig,
   pytestNodeId,
   splitArgs,
@@ -30,6 +31,22 @@ test('pytestNodeId inside a module-level async test returns its name', () => {
 
 test('pytestNodeId outside any test returns undefined', () => {
   assert.equal(pytestNodeId(DOCUMENT, 0), undefined);
+});
+
+test('launchResourcePath uses the program first', () => {
+  const config = parseLaunchConfig({ program: '/ws/apps/edge/main.py', cwd: '/ws/apps/edge' });
+  assert.equal(launchResourcePath(config, '/ws'), '/ws/apps/edge/main.py');
+});
+
+test('launchResourcePath of a module in a workspace-file configuration falls back to its cwd', () => {
+  const config = parseLaunchConfig({ module: 'nodeedge_edge.main', cwd: '/ws/apps/edge' });
+  assert.equal(launchResourcePath(config, undefined), '/ws/apps/edge');
+});
+
+test('launchResourcePath without program or cwd uses the folder', () => {
+  const config = parseLaunchConfig({ module: 'pkg' });
+  assert.equal(launchResourcePath(config, '/ws'), '/ws');
+  assert.equal(launchResourcePath(config, undefined), undefined);
 });
 
 test('splitArgs honours single and double quotes', () => {

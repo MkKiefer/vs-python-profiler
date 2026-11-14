@@ -17,7 +17,13 @@ import * as path from 'node:path';
 import { DefaultConfigurationPicker } from './defaultConfigurations';
 import { parseDotEnv } from './dotenv';
 import type { EnvironmentResolver } from './environment';
-import { parseLaunchConfig, pytestNodeId, type DefaultConfigurationKind, type LaunchConfig } from './launchConfig';
+import {
+  launchResourcePath,
+  parseLaunchConfig,
+  pytestNodeId,
+  type DefaultConfigurationKind,
+  type LaunchConfig,
+} from './launchConfig';
 import type { ProcessPicker } from './processes';
 import type { SessionManager } from './sessionManager';
 import { settings } from './settings';
@@ -117,7 +123,8 @@ export class LaunchAdapter implements vscode.DebugConfigurationProvider {
   private async launchFromConfig(folder: vscode.WorkspaceFolder | undefined, config: LaunchConfig): Promise<void> {
     const target = config.module ?? config.program;
     if (!target) throw new Error('launch configuration needs "program" or "module"');
-    const resource = config.program ? vscode.Uri.file(config.program) : folder?.uri;
+    const resourcePath = launchResourcePath(config, folder?.uri.fsPath);
+    const resource = resourcePath ? vscode.Uri.file(resourcePath) : undefined;
     const python = await this.env.ensureSupported(resource, config.python);
     if (!python) return;
     const { inject: _attachOnly, ...profile } = config.profile;
