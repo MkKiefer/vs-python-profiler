@@ -25,10 +25,12 @@ class MemoryProbe:
     does not ask for memory profiling.
     """
 
-    # The agent's code is everything in this package except the launcher: launcher frames
-    # sit at the root of every traceback of a program started with the profiler.
-    _AGENT_CODE_PREFIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "")
-    _LAUNCHER_FILE = os.path.join(_AGENT_CODE_PREFIX, "launcher.py")
+    # The agent's code is the whole profiler package (target/, but also wire.py and agent_protocol/,
+    # whose frames may be all that is left of a traceback cut at the frame limit) except the launcher:
+    # launcher frames sit at the root of every traceback of a program started with the profiler.
+    _TARGET_DIR = os.path.dirname(os.path.abspath(__file__))
+    _AGENT_CODE_PREFIX = os.path.join(os.path.dirname(_TARGET_DIR), "")
+    _LAUNCHER_FILE = os.path.join(_TARGET_DIR, "launcher.py")
 
     def __init__(self) -> None:
         self._started_tracing = False

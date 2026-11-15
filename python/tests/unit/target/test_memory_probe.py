@@ -1,8 +1,10 @@
 import tracemalloc
 import unittest
 
+from _vspyprof import wire
 from _vspyprof.agent_protocol.replies import TracingStatus
 from _vspyprof.target.memory_probe import MemoryProbe
+from _vspyprof.wire import WireEncoder
 
 
 @unittest.skipIf(tracemalloc.is_tracing(), "the test run itself is traced")
@@ -75,6 +77,16 @@ class TestMemoryProbe(unittest.TestCase):
         files = {frame.filename for allocation in snapshot.top for frame in allocation.traceback}
         self.assertIn(__file__, files)
         self.assertGreaterEqual(snapshot.total_size, len(block))
+
+    def test_snapshot_leaves_out_memory_the_wire_layer_allocated(self) -> None:
+        self.probe.start_tracing(5)
+        message = WireEncoder().to_text(list(range(20_000)))  # the text is allocated below wire.py
+
+        snapshot = self.probe.snapshot(1000)
+
+        files = {frame.filename for allocation in snapshot.top for frame in allocation.traceback}
+        self.assertNotIn(wire.__file__, files)
+        self.assertGreater(len(message), 100_000)
 
     def test_snapshot_with_limit_sums_the_rest_as_other(self) -> None:
         self.probe.start_tracing(5)
