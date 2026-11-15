@@ -60,7 +60,7 @@ python/_vspyprof/
  │ ├ cli.py            entry point and composition root
  │ ├ session.py        the RPC API (CollectorSession); ties sampler, agent link and store together
  │ ├ protocol.py       names of the RPC methods, notifications and session states (mirror of protocol.ts)
- │ ├ rpc_params.py · rpc_results.py · notifications.py   what the extension sends, what the collector answers
+ │ ├ requests.py · rpc_results.py · notifications.py   what the extension sends, what the collector answers
  │ │                   and pushes, as dataclasses
  │ ├ rpc.py · options.py   JSON-lines RPC over stdio · session options
  │ ├ memory_snapshot_builder.py · profile_writer.py   agent snapshot reply → stored snapshot · .vspyprof files
@@ -174,7 +174,7 @@ the collector's own Python 3.15 process:
 
 | Exception | Where | Why |
 |---|---|---|
-| Imports inside functions | `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; the agent modules (`target/agent.py`, `memory_probe.py`, `loop_monitor.py`, `asyncio_debug.py`) use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). `collector/store/` and `collector/agent/listener.py` use `lazy` imports for names that only appear in annotations (the private `_remote_debugging` types; a circular reference). |
+| Imports inside functions | `target/launcher.py` (`ctypes`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; the agent modules (`target/agent.py`, `memory_probe.py`, `loop_monitor.py`, `asyncio_debug.py`) use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). `collector/store/` and `collector/agent/listener.py` use `lazy` imports for names that only appear in annotations (the private `_remote_debugging` types; a circular reference). |
 | Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
 | Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
 | No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only. Messages are plain dataclasses read by their `"type"` with `cls(**fields)`; values are not checked against the field types, because both ends are built from the same classes (`protocol.ts` mirrors them for the extension). |
