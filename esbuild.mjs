@@ -10,7 +10,7 @@ if (!((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 
   console.error(
     `Node.js ${process.versions.node} is too old for this build: it needs ^20.19.0 or >=22.12.0 (${process.execPath}).\n` +
       'If you use nvm: it is loaded only in interactive shells, so VS Code tasks may get the system Node instead. ' +
-      'See "Development" in README.md.',
+      'See "Development" in CONTRIBUTING.md.',
   );
   process.exit(1);
 }

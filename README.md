@@ -14,6 +14,17 @@ is installed into your environment and your code needs no changes.
 - **Timeline**: threads (on-CPU and GIL waits), GC, CPU, memory and loop lag on one time axis. Drag to zoom every view
 - Saved `.vspyprof` files open in the dashboard. Export to speedscope or collapsed stacks
 
+![The overview tab: CPU, memory and event-loop lag over time, insights, hottest functions, top allocators and longest-running tasks](media/screenshots/overview.png)
+
+## Requirements
+
+- **VS Code 1.95+** with the [Python extension](https://marketplace.visualstudio.com/items?itemName=ms-python.python)
+  (installed automatically).
+- **Python 3.15 or newer** for the program you profile. Tachyon, `sys.remote_exec` and the asyncio
+  introspection the profiler relies on are new in 3.15. If the selected interpreter is older, the
+  profiler offers to pick another one or to create a 3.15 venv.
+- Local folders, WSL, SSH and Dev Containers work: the profiler runs where your Python runs.
+
 ## Starting a profile
 
 | You want to… | Do this |
@@ -42,190 +53,69 @@ Attaching injects a small agent through `sys.remote_exec` (for memory and asynci
 debug). If the target disabled remote debugging (`PYTHON_DISABLE_REMOTE_DEBUG`), CPU
 sampling, task graphs and GC stats still work.
 
-## Architecture
+## A tour
 
-```
-VS Code extension host (TypeScript, src/extension)        Webview dashboard (Vue 3, src/webview)
- ├ extension.ts        composition root                                   ▲ postMessage
- ├ EnvironmentResolver ← ms-python API (interpreter per resource, .env)   │ (init + deltas)
- ├ LaunchAdapter       ← debugpy configs, python-profiler debug type      │
- ├ SessionManager / Session / CollectorClient ─────────────────────────────┘
- ├ SessionActions · Commands (every vspyprof.* command)
- ├ Dashboards · EditorHeat (decorations, CodeLens) · views/ · StatusBar
- │
- │ JSON-lines RPC over stdio            contract: src/shared/protocol.ts
- ▼
-python/_vspyprof/
- ├ collector/          runs in the collector process (python -I, *target's* interpreter, stdlib only)
- │ ├ cli.py            entry point and composition root
- │ ├ session.py        the RPC API (CollectorSession); ties sampler, agent link and store together
- │ ├ protocol.py       names of the RPC methods, notifications and session states (mirror of protocol.ts)
- │ ├ requests.py · rpc_results.py · notifications.py   what the extension sends, what the collector answers
- │ │                   and pushes, as dataclasses
- │ ├ rpc.py · options.py   JSON-lines RPC over stdio · session options
- │ ├ memory_snapshot_builder.py · profile_writer.py   agent snapshot reply → stored snapshot · .vspyprof files
- │ ├ sampling/         sampler.py (fixed-rate loop: stacks, async stacks, task graph, children), gc_recorder.py,
- │ │                   sampler_factory.py, process_stats.py + one RSS/CPU reader per OS,
- │ │                   tachyon.py - the only module that touches _remote_debugging
- │ ├ store/            store.py (thread-safe facade → deltas / .vspyprof) over stack_table.py (interned frames +
- │ │                   stack prefix tree), sample_runs.py (run-length encoded samples) over typed_column.py +
- │ │                   column_snapshot.py, task_table.py, memory_snapshot.py, append_log.py,
- │ │                   session_clock.py, track.py, sampling_stats.py, profile_meta.py, timeline_event.py, async_stack.py
- │ ├ frames/           frame_classifier.py (file → user / library / stdlib / internal),
- │ │                   func_resolver.py ((file, line) → function name)
- │ └ agent/            server.py (accepts the agent, token check), connection.py (requests, messages),
- │                     injector.py (sys.remote_exec)
- │                       ▲ localhost TCP + token
- ├ target/             runs *inside the profiled program*; imports nothing from collector/
- │ ├ launcher.py       Run with Profiler: runs your program in *your* environment (runpy), starts the agent
- │ ├ agent.py          the agent thread: connects back, serves commands, reports metrics
- │ └ memory_probe.py · loop_monitor.py · asyncio_debug.py   tracemalloc + object counts · loop lag · debug events
- ├ agent_protocol/     collector ⇄ agent contract, used by both ends: commands.py, hello.py, metrics.py,
- │                     replies.py, options.py, messages.py (which classes go which way), names.py, address.py
- ├ wire.py             dataclass ⇄ JSON line by "type" (WireEncoder / WireDecoder), Request / Response, LineBuffer
- └ processes.py        standalone script (any Python): lists Python processes
-```
+**CPU.** Flame graph, call tree, bottom-up view and top functions, in wall-clock, CPU or GIL time,
+grouped by thread or by asyncio task. Click to zoom, double-click to open the source, right-click for
+callers and callees.
 
-- **One data model.** The collector's store and the TypeScript `ProfileModel`
-  (`src/shared/model.ts`) share one schema: frames, stack prefix tree, samples
-  (`t, tid, stack, status`), tracks, tasks, snapshots and events. Live deltas and
-  `.vspyprof` files (gzip JSON) have the same shape.
-- **Samples stay compact.** They are the one table that grows with time × threads. A
-  thread that waits on a lock, socket or queue repeats one sample every tick, so samples
-  are stored as **runs** (profile format 2): one 14-byte row `tick, count, thread, stack,
-  status` per stretch of equal samples, plus the time of each tick (`SampleRuns` in the
-  collector, `src/shared/sampleTable.ts` in the extension and dashboard). Queries stay
-  exact: a time range maps to a range of ticks and a run counts with its overlap. A server
-  with one busy thread and eight idle workers measured 1.5 bytes per sample (21.6 with one
-  row per sample); one row per sample (format 1) is still read. Runs are typed columns
-  everywhere (`array.array`, typed arrays); a dashboard's `init` sends them as typed
-  arrays, which `postMessage` transfers as binary and the dashboard adopts without
-  copying, and both the collector and the extension stream them into `.vspyprof` files.
-- **One wire contract.** Every message that crosses a process boundary (webview ⇄
-  extension ⇄ collector) is declared in
-  `src/shared/protocol.ts`. Both Python streams (extension ⇄ collector over stdio,
-  collector ⇄ agent over TCP) carry one JSON object per line whose `"type"` is the
-  name of a plain dataclass: `wire.WireEncoder` writes any dataclass that way
-  (nested ones included), and a `wire.WireDecoder` built from the classes an end
-  receives (`collector/messages.py`, `agent_protocol/messages.py`) reads them back
-  with `cls(**fields)`, so a missing key takes the field's default. Requests and
-  answers are the shared `Request(id, body)` / `Response(id, result, error)`; the
-  receiving end runs a request with a `match` on the body's class.
-- **Two sides, kept apart.** `collector/` observes the program from outside;
-  `target/` is everything that runs inside it, so it imports only `wire.py`,
-  `agent_protocol/` and the package root (`tests/unit/target/test_isolation.py` fails if that changes).
-- **Private API, isolated.** `_remote_debugging` is CPython-internal, so only
-  `sampling/tachyon.py` touches it, with fallbacks for changed signatures. Its types are
-  declared in `python/stubs/`.
-- **The dashboard is a Vue app.** `src/webview` is Vue 3 (`<script setup>`), Pinia,
-  Vue Router and Tailwind, built by Vite into `dist/webview.js` + `dist/webview.css`:
-  `services/` (the `HostClient` interface, its VS Code implementation and an in-memory
-  mock), `stores/` (session, view filters, notifications, tooltip), `router/` (one route
-  per tab, `/cpu/focus/:fn` for callers & callees), `views/`, `components/ui` (the
-  design system), `components/charts` (canvas charts), `domain/insights.ts`. The
-  `ProfileModel` stays raw in a shallow ref: live deltas mutate it in place and trigger
-  one redraw at most every 500 ms. Commands are request/response (`commandResult`), so
-  every button awaits its outcome and a failure is shown as a toast.
-- **Start mode always uses a real terminal.** VS Code runs the launcher with your
-  interpreter, so you get a TTY, stdin and colors. The agent's hello tells the collector
-  which PID to sample, which also handles Windows venv launcher stubs.
+![The CPU tab: a flame graph of worker threads and the event loop](media/screenshots/flame.png)
 
-## Development
+**Memory.** Take tracemalloc snapshots while the program runs and compare two of them: the table and
+the allocation flame graph show only what grew in between, which is usually the leak.
 
-Requires Node.js `^20.19.0` or `>=22.12.0` (Vite) and, for the collector, Python 3.15.
+![The memory tab: memory over time with two snapshots, the growth between them and an allocation flame graph](media/screenshots/memory.png)
 
-If Node comes from **nvm**: nvm is loaded from `~/.bashrc` only in interactive shells,
-and VS Code tasks normally run a non-interactive `bash -c`, so they would get the system
-Node. This project's tasks (`npm: build`, `npm: watch`, the F5 pre-launch build) therefore
-run in `bash -ic` on Linux (`.vscode/tasks.json`). If a build still stops with "Node.js …
-is too old", run it from a terminal, or make the VS Code server itself load nvm (on WSL:
-put the two nvm lines from `~/.bashrc` into `~/.vscode-server/server-env-setup`).
+**asyncio.** Event-loop lag shows when something blocked the loop; the task timeline shows what each
+task did and when; asyncio debug mode reports slow callbacks and coroutines that were never awaited.
 
-```bash
-npm install
-npm run check              # vue-tsc + eslint + tests + build (the TypeScript gate)
-npm run test:webview       # just the dashboard specs (Vitest + jsdom)
+![The async tab: event-loop lag and the task timeline](media/screenshots/async.png)
 
-cd python
-pdm install -G dev         # Python 3.15 venv with ruff, mypy, vulture
-pdm run check              # ruff lint + format check, mypy --strict, vulture, unit tests (the Python gate)
-pdm run test:integration   # collector end-to-end: launch, attach+inject, memory, asyncio
-```
+**Timeline.** Every thread (on CPU, waiting for the GIL, in GC), CPU, memory and loop lag on one time
+axis. Drag across any track to narrow every tab, and the editor heat map, to that time range.
 
-| Tests | What they cover |
-|---|---|
-| `test/*.test.ts` | profile model and exporters against recorded profiles (`test/fixtures`), launch-config parsing, formatting, and an activation smoke test that loads the extension against a stub of the VS Code API |
-| `test/webview/*.spec.ts` | the dashboard: every spec mounts the whole app (real router and stores) over `MockHostClient` through `mountApp(path, …)`; `smoke.spec.ts` opens every route with every fixture, saved and live, and any Vue warning or console error fails a test; feature specs drive tabs, commands, filters and live updates; unit specs cover the host client, persisted state and insights |
-| `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `VSPYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`VSPYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
-| `python/tests/unit/` | mirrors the package (`collector/…`, `target/`): one test module per source module, plus `target/test_isolation.py`, which fails if code that runs inside the profiled program starts importing collector code; no target process needed |
-| `python/tests/integration/` | drives a real collector over stdio exactly like the extension, profiling the programs in `test-apps/` |
+![The timeline tab: thread lanes with GIL waits and GC pauses above sample, CPU and memory charts](media/screenshots/timeline.png)
 
-Press **F5** ("Run Extension") to open an Extension Development Host on `test-apps/`
-(`cpu_bound.py`, `leaky.py`, `async_storm.py`).
+## Settings
 
-Settings are under `vspyprof.*`: sampling rate, blocking sampling, tracemalloc on start
-and frames, asyncio debug and slow-callback threshold, heat map metric, CodeLens,
-child-process handling and auto-save. `src/extension/settings.ts`
-is the only module that reads them.
-
-### Releasing
-
-Every CI run uploads the packaged extension as the `vsix` workflow artifact. To publish a
-version, bump `version` in both `package.json` and `python/pyproject.toml`, merge to `main`,
-then tag that commit:
-
-```bash
-git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
-```
-
-`.github/workflows/release.yml` checks that the tag is `vX.Y.Z`, matches both versions and is
-on `main`, runs the full CI, and creates a GitHub release with the `.vsix`, `SHA256SUMS.txt`,
-generated notes and a signed build provenance attestation. Verify a download with
-`gh attestation verify python-profiler-0.2.0.vsix --repo <owner>/<repo>`, install it with
-`code --install-extension python-profiler-0.2.0.vsix`.
-
-Hardening: the workflows grant the token only what each job needs (only the final `publish`
-job can write, and it runs no repository code), pin actions to commit SHAs (Dependabot
-updates them), install npm packages with `--ignore-scripts`, and build releases without the
-npm cache. Recommended repository settings: a tag ruleset restricting who may create `v*`
-tags, required reviewers on the `release` environment, and immutable releases.
-
-### Coding standards
-
-The Python code follows the team's Python and unittest style guides: behaviour lives
-in classes with constructor-injected collaborators, interfaces are ABCs, imports are
-absolute and at the top of the file, there is no `Any`, and the gate is `pdm run check`.
-The TypeScript and Vue code follows the Vue & TypeScript guide: no `any`, no non-null
-assertions, one module for the wire contract, routes named through one enum, one
-store per domain, an API-client interface with a real and an in-memory implementation,
-awaited writes with visible failures, Tailwind for layout and CSS custom properties for
-every theme colour, whole-app specs through `mountApp`, `data-testid`s stripped from
-production builds, and `vue-tsc --build` + ESLint (`eslint-plugin-vue`, typed rules) +
-tests + build as the gate.
-
-This project has a few **documented exceptions**, all caused by code that runs outside
-the collector's own Python 3.15 process:
-
-| Exception | Where | Why |
+| Setting | Default | What it does |
 |---|---|---|
-| Imports inside functions | `target/launcher.py` (`ctypes`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; the agent modules (`target/agent.py`, `memory_probe.py`, `loop_monitor.py`, `asyncio_debug.py`) use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). `collector/store/` and `collector/agent/listener.py` use `lazy` imports for names that only appear in annotations (the private `_remote_debugging` types; a circular reference). |
-| Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
-| Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
-| No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only. Messages are plain dataclasses read by their `"type"` with `cls(**fields)`; values are not checked against the field types, because both ends are built from the same classes (`protocol.ts` mirrors them for the extension). |
-| Module-level entry points | `collector.cli.main`, `target.launcher.main`, `target.agent.start` | Called by name from the extension's `python -c` bootstraps and from `sys.remote_exec`; they only delegate to a class. |
-| Plain class instead of a dataclass | `target/loop_monitor._LoopProbe` | `@dataclass` evaluates field annotations at import; its `asyncio` annotation would load `asyncio` into a program that does not use it (`test_isolation.py` fails if it does). |
-| Dataclasses without `slots=True` | `agent_protocol/` | The package is imported inside the profiled program (on its main thread when attaching). Slotted dataclasses rebuild every class and load `inspect`; plain frozen dataclasses keep the one-time import pause short. |
-| JSON objects as `dict[str, object]` | `wire.py`, the store classes' `to_profile()`, `Store.delta()` / `full()` (the `.vspyprof` format), the `Delta` notification and `ProfileWriter` | JSON exists only at the wire edge and in the profile format. Between classes, data travels as a message dataclass (requests / results, notifications, agent commands / hello / metrics / replies, options) or another named type; names with a fixed set of values are enums. |
-| Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
+| `vspyprof.samplingRate` | `1000` | Stack samples per second. Tachyon handles 1–10 kHz. |
+| `vspyprof.blockingSampling` | `false` | Pause the target's threads for each sample. Removes discarded samples on busy multi-threaded programs, at the cost of more overhead. |
+| `vspyprof.nativeFrames` | `false` | Show `<native>` frames for time spent in C code. |
+| `vspyprof.memory.tracemallocOnStart` | `false` | Start tracemalloc with the session (adds roughly 30–100 % CPU and memory overhead to the target). |
+| `vspyprof.memory.tracebackFrames` | `16` | Frames recorded per allocation. |
+| `vspyprof.asyncio.debugOnStart` | `false` | Turn on asyncio debug mode with the session. |
+| `vspyprof.asyncio.slowCallbackMs` | `100` | Callbacks that block the event loop longer than this are reported. |
+| `vspyprof.heatMap.enabled` | `true` | Gutter heat and inline timings in the editor. |
+| `vspyprof.heatMap.metric` | `total` | Whether the heat map shows `self` or `total` time per line. |
+| `vspyprof.codeLens.enabled` | `true` | CodeLens above hot functions. |
+| `vspyprof.followChildren` | `ask` | What to do when the program starts Python child processes (`ask`, `always`, `never`). |
+| `vspyprof.autoSave` | `true` | Save every finished session as a `.vspyprof` file, listed under **Sessions**. |
+| `vspyprof.openDashboardOnStart` | `true` | Open the dashboard when a session starts. |
+| `vspyprof.pythonPath` | | Interpreter to use when the Python extension is unavailable. |
 
-The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of
-the Vue & TypeScript guide are adapted:
+## Good to know
 
-| Guide rule | Here | Why |
-|---|---|---|
-| Navigation state lives in the URL | The router uses memory history; the current route is saved through the webview state (`HostClient.saveState`) and restored when the panel reopens | A webview has no address bar and no shareable URL; the webview state is what survives hiding, moving and reloading the panel. |
-| Filters in the URL (`?tab=`) | Sample mode, grouping, threads, hidden libraries and time range live in the `view` store; only the CPU view kind is a route query | The filters are shared by every tab and reported to the extension (editor heat map, Hotspots view), so they are session view state rather than navigation. |
-| `ensureX` / `refreshX` / `fetchX` loads, shared polling helper | Not used | The extension pushes data (`init`, then `delta`s); the dashboard never requests or polls. |
-| Explicit save, optimistic concurrency | Not applicable | There are no editors. Each command is one explicit click, awaited, with a failure shown as a toast. |
-| Permission gating in router guard, navigation and component | Session capabilities (`live`, `agent`, `tracemalloc`, …) gate actions inside the components only | There are no users or permissions; every tab is useful for every session, so no route needs a guard. |
-| Vitest for tests | Extension-host tests (`test/*.test.ts`) stay on `node:test` | They test Node code against a stub of the VS Code API; Vitest covers the Vue app. |
+- **Discarded samples.** On a busy multi-threaded program, some samples catch a thread mid-update
+  and are discarded; the overview shows how many. Turn on `vspyprof.blockingSampling` if the share
+  is high and you need every sample.
+- **Measurement changes the program.** tracemalloc and asyncio debug mode run *inside* your program
+  and slow it down; asyncio debug mode records a traceback for every task and callback it creates,
+  which shows up in the flame graph. Turn them on to find a leak or a blocking call, and leave them
+  off when you measure CPU time. CPU sampling itself reads the program from outside.
+- **Restricted Mode.** Profiling runs Python from the workspace, so it needs a
+  [trusted workspace](https://code.visualstudio.com/docs/editor/workspace-trust). Saved profiles open
+  in Restricted Mode too.
+- **Saved profiles** (`.vspyprof`) are gzip JSON and open in the dashboard by double-click. **Export**
+  writes [speedscope](https://www.speedscope.app/) JSON or collapsed stacks for other tools.
+
+## Feedback and contributing
+
+Bugs and ideas: [GitHub issues](https://github.com/MkKiefer/vs-python-profiler/issues). How to build
+and test the extension is in [CONTRIBUTING.md](CONTRIBUTING.md), how it works in
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+## License
+
+[MIT](LICENSE)
