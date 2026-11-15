@@ -54,7 +54,7 @@ after(() => {
 });
 
 test('attach starts a running session that receives samples', { skip }, async () => {
-  await until(() => session.model.samples.length > 50, 'samples');
+  await until(() => session.model.samples.sampleCount > 50, 'samples');
   // Right after attaching, the main thread imports the injected agent; those samples are
   // dropped as profiler-internal, so the program's own main-thread functions show up a moment later.
   await until(() => session.model.fns.some((fn) => fn.func === 'fib'), 'main-thread samples');
@@ -82,7 +82,7 @@ test('stop ends the session and auto-saves the profile', { skip }, async () => {
 
 test('removing the session keeps its saved profile, which opens again from disk', { skip }, async () => {
   const file = session.filePath ?? '';
-  const samples = session.model.samples.length;
+  const samples = session.model.samples.sampleCount;
 
   await sessions.remove(session);
   const listed = sessions.savedProfiles().map((profile) => profile.file);
@@ -91,7 +91,7 @@ test('removing the session keeps its saved profile, which opens again from disk'
   assert.deepEqual(listed, [file]);
   assert.deepEqual(sessions.sessions, [reopened]);
   assert.equal(reopened.state, 'file');
-  assert.equal(reopened.model.samples.length, samples);
+  assert.equal(reopened.model.samples.sampleCount, samples);
   assert.equal(reopened.label, 'cpu_bound.py');
 });
 
@@ -127,7 +127,7 @@ test('removing a live session waits for its auto-save', { skip }, async () => {
     await new Promise((resolve) => setTimeout(resolve, 500)); // let the interpreter start
     const info: PythonInfo = { executable: python ?? '', version: '3.15', major: 3, minor: 15, freeThreaded: false, label: 'test' };
     const live = await sessions.attach(second.pid ?? 0, info, 'cpu_bound.py', { rateHz: 200, inject: false });
-    await until(() => live.model.samples.length > 50, 'samples');
+    await until(() => live.model.samples.sampleCount > 50, 'samples');
 
     await sessions.remove(live);
     const saved = sessions.savedProfiles();

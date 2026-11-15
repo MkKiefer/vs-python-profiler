@@ -67,8 +67,8 @@ class Client:
         m = self.model
         m["frames"] += d["frames"]
         m["stacks"] += d["stacks"]
-        m["samples"] += len(d["samples"]["t"])
-        m["asyncSamples"] += len(d["asyncSamples"]["t"])
+        m["samples"] += sum(d["samples"]["count"])  # samples are runs of equal samples (format 2)
+        m["asyncSamples"] += sum(d["asyncSamples"]["count"])
         for t in d["tasks"]:
             m["tasks"][t["id"]] = t
         for k, v in d["tracks"].items():
@@ -172,7 +172,7 @@ class E2E(unittest.TestCase):
                 with gzip.open(path, "rt") as f:
                     data = json.load(f)
                 self.assertEqual(data["format"], "vspyprof")
-                self.assertEqual(len(data["samples"]["t"]), c.model["samples"])
+                self.assertEqual(sum(data["samples"]["count"]), c.model["samples"])
         finally:
             c.close()
 

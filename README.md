@@ -68,7 +68,8 @@ python/_vspyprof/
  │ │                   sampler_factory.py, process_stats.py + one RSS/CPU reader per OS,
  │ │                   tachyon.py - the only module that touches _remote_debugging
  │ ├ store/            store.py (thread-safe facade → deltas / .vspyprof) over stack_table.py (interned frames +
- │ │                   stack prefix tree), sample_columns.py, task_table.py, memory_snapshot.py, append_log.py,
+ │ │                   stack prefix tree), sample_runs.py (run-length encoded samples) over typed_column.py +
+ │ │                   column_snapshot.py, task_table.py, memory_snapshot.py, append_log.py,
  │ │                   session_clock.py, track.py, sampling_stats.py, profile_meta.py, timeline_event.py, async_stack.py
  │ ├ frames/           frame_classifier.py (file → user / library / stdlib / internal),
  │ │                   func_resolver.py ((file, line) → function name)
@@ -89,11 +90,17 @@ python/_vspyprof/
   (`src/shared/model.ts`) share one schema: frames, stack prefix tree, samples
   (`t, tid, stack, status`), tracks, tasks, snapshots and events. Live deltas and
   `.vspyprof` files (gzip JSON) have the same shape.
-- **Samples stay compact.** They are the one table that grows with time × threads, so
-  they are typed columns everywhere: `array.array` in the collector, typed arrays in
-  `ProfileModel` (21 bytes per sample). A dashboard's `init` sends them as typed arrays,
-  which `postMessage` transfers as binary and the dashboard adopts without copying, and
-  both the collector and the extension stream them into `.vspyprof` files chunk by chunk.
+- **Samples stay compact.** They are the one table that grows with time × threads. A
+  thread that waits on a lock, socket or queue repeats one sample every tick, so samples
+  are stored as **runs** (profile format 2): one 14-byte row `tick, count, thread, stack,
+  status` per stretch of equal samples, plus the time of each tick (`SampleRuns` in the
+  collector, `src/shared/sampleTable.ts` in the extension and dashboard). Queries stay
+  exact: a time range maps to a range of ticks and a run counts with its overlap. A server
+  with one busy thread and eight idle workers measured 1.5 bytes per sample (21.6 with one
+  row per sample); one row per sample (format 1) is still read. Runs are typed columns
+  everywhere (`array.array`, typed arrays); a dashboard's `init` sends them as typed
+  arrays, which `postMessage` transfers as binary and the dashboard adopts without
+  copying, and both the collector and the extension stream them into `.vspyprof` files.
 - **One wire contract.** Every message that crosses a process boundary (webview ⇄
   extension ⇄ collector) is declared in
   `src/shared/protocol.ts`. Both Python streams (extension ⇄ collector over stdio,

@@ -1,5 +1,5 @@
 /** Automatic findings for the Overview tab, each with a link into the tab that explains it. */
-import { Cat, STATUS_GIL_REQUESTED, STATUS_HAS_GIL, type ProfileModel } from '../../shared/model';
+import { Cat, type ProfileModel } from '../../shared/model';
 import type { Capabilities, SessionState } from '../../shared/protocol';
 import { fmtBytes, fmtMs, fmtPct, maxOf, mean } from '../../shared/format';
 import { RouteName } from '../router/routeNames';
@@ -55,18 +55,14 @@ export function computeInsights({ model: m, capabilities, state, counts, total }
     });
   }
 
-  let waiting = 0;
-  const samples = m.samples;
-  for (let i = 0; i < samples.length; i++) {
-    const status = samples.status[i];
-    if (status & STATUS_GIL_REQUESTED && !(status & STATUS_HAS_GIL)) waiting++;
-  }
+  const waiting = m.countWaitingForGil();
+  const sampled = m.samples.sampleCount;
   // needs two sampled threads: with one, GIL waits come from our own agent
-  if (m.threadList().length >= 2 && samples.length > 500 && waiting / samples.length > 0.15) {
+  if (m.threadList().length >= 2 && sampled > 500 && waiting / sampled > 0.15) {
     out.push({
       id: 'gil-contention',
       severity: 'warn',
-      text: `Threads were waiting for the GIL in ${fmtPct(waiting, samples.length)} of samples — CPU-bound threads contend for the interpreter.`,
+      text: `Threads were waiting for the GIL in ${fmtPct(waiting, sampled)} of samples — CPU-bound threads contend for the interpreter.`,
       action: { label: 'Open timeline', target: route(RouteName.Timeline) },
     });
   }

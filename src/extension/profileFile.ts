@@ -4,7 +4,7 @@ import * as zlib from 'node:zlib';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
-import { PROFILE_FORMAT, PROFILE_FORMAT_VERSION, type Columns, type Delta } from '../shared/model';
+import { MAX_RUN, PROFILE_FORMAT, PROFILE_FORMAT_VERSION, type Delta, type RunColumns } from '../shared/model';
 
 const gunzip = promisify(zlib.gunzip);
 
@@ -26,7 +26,9 @@ export async function readProfile(file: string): Promise<Delta> {
 const LIST_KEYS = ['frames', 'stacks', 'gc', 'markers', 'events', 'taskEvents', 'tasks', 'snapshots', 'objectCounts'] as const;
 const RECORD_KEYS = ['tracks', 'threads'] as const;
 const SAMPLE_KEYS = ['samples', 'asyncSamples'] as const;
-const COLUMN_KEYS = ['t', 'tid', 'stack', 'status'] as const;
+/** the per-sample columns of format 1, and the per-run columns of format 2 */
+const LEGACY_COLUMN_KEYS = ['t', 'tid', 'stack', 'status'] as const;
+const RUN_COLUMN_KEYS = ['tick', 'count', 'thread', 'stack', 'status'] as const;
 
 /**
  * Check that decoded JSON is a profile this version can show, so a damaged file or one from a newer
@@ -45,15 +47,28 @@ export function parseProfile(file: string, data: unknown): Delta {
   for (const key of SAMPLE_KEYS) {
     const columns = data[key];
     if (!isRecord(columns)) throw damaged(`"${key}" is not an object`);
-    const lengths = COLUMN_KEYS.map((column) => {
-      const values = columns[column];
-      if (!Array.isArray(values)) throw damaged(`"${key}.${column}" is not a list`);
-      return values.length;
-    });
-    if (lengths.some((length) => length !== lengths[0])) throw damaged(`the "${key}" columns differ in length`);
+    const list = (name: string): unknown[] => {
+      const values = columns[name];
+      if (!Array.isArray(values)) throw damaged(`"${key}.${name}" is not a list`);
+      return values;
+    };
+    const rows = (version >= 2 ? RUN_COLUMN_KEYS : LEGACY_COLUMN_KEYS).map(list);
+    if (rows.some((column) => column.length !== rows[0].length)) throw damaged(`the "${key}" columns differ in length`);
+    if (version >= 2) checkRuns(list('tick'), list('count'), list('thread'), list('ticks').length, list('threadIds').length, () => damaged(`"${key}" has runs outside its ticks or threads`));
   }
   // the checks above cover what applyDelta reads; the rest is the collector's side of the format
   return data as unknown as Delta;
+}
+
+/** Every run must lie within the ticks and name a known thread, or queries would read past the tables. */
+function checkRuns(tick: unknown[], count: unknown[], thread: unknown[], ticks: number, threads: number, damaged: () => Error): void {
+  for (let row = 0; row < tick.length; row++) {
+    const start = tick[row];
+    const length = count[row];
+    const index = thread[row];
+    if (typeof start !== 'number' || typeof length !== 'number' || typeof index !== 'number') throw damaged();
+    if (start < 0 || length < 1 || length > MAX_RUN || start + length > ticks || index < 0 || index >= threads) throw damaged();
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -87,16 +102,16 @@ function* profileText(data: Delta): Generator<string> {
     if (value === undefined) continue; // JSON.stringify leaves such keys out as well
     yield `${first ? '' : ','}${JSON.stringify(key)}:`;
     first = false;
-    if (SAMPLE_TABLES.has(key)) yield* columnsText(value as Columns);
+    if (SAMPLE_TABLES.has(key)) yield* columnsText(value as RunColumns);
     else yield JSON.stringify(value);
   }
   yield '}';
 }
 
-function* columnsText(columns: Columns): Generator<string> {
+function* columnsText(columns: RunColumns): Generator<string> {
   yield '{';
   let first = true;
-  for (const [name, values] of Object.entries(columns) as [string, Columns[keyof Columns]][]) {
+  for (const [name, values] of Object.entries(columns) as [string, RunColumns[keyof RunColumns]][]) {
     yield `${first ? '' : ','}${JSON.stringify(name)}:[`;
     first = false;
     for (let start = 0; start < values.length; start += COLUMN_CHUNK) {

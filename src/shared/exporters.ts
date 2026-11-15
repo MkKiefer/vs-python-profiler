@@ -48,15 +48,17 @@ export function toSpeedscope(model: ProfileModel, name: string): SpeedscopeFile 
   };
   const interval = model.sampleIntervalMs;
   const byThread = new Map<number, { samples: number[][]; weights: number[]; start: number; end: number }>();
-  const t = model.samples;
-  for (let i = 0; i < t.length; i++) {
-    const tid = t.tid[i];
+  const table = model.samples;
+  // one weighted sample per run; a thread's runs never overlap, and they come in order
+  table.forEachRun(undefined, undefined, (row, first, last) => {
+    const tid = table.threadId(row);
+    const start = table.ticks[first];
     let p = byThread.get(tid);
-    if (!p) byThread.set(tid, (p = { samples: [], weights: [], start: t.t[i], end: t.t[i] }));
-    p.samples.push(model.path(t.stack[i]).map(idx));
-    p.weights.push(interval);
-    p.end = t.t[i] + interval;
-  }
+    if (!p) byThread.set(tid, (p = { samples: [], weights: [], start, end: start }));
+    p.samples.push(model.path(table.stack[row]).map(idx));
+    p.weights.push((last - first + 1) * interval);
+    p.end = table.ticks[last] + interval;
+  });
   return {
     $schema: 'https://www.speedscope.app/file-format-schema.json',
     name,

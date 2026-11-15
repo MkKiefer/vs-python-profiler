@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Cat, ProfileModel, type Columns, type Delta, type TreeNode } from '../src/shared/model';
+import { Cat, ProfileModel, type Delta, type RunColumns, type TreeNode } from '../src/shared/model';
 import { loadProfile } from './support/fixtures';
 
 /** A live delta that adds nothing. */
 function emptyDelta(): Delta {
-  const columns = (): Columns => ({ t: [], tid: [], stack: [], status: [] });
+  const columns = (): RunColumns => ({ ticks: [], threadIds: [], tick: [], count: [], thread: [], stack: [], status: [] });
   return {
     now: 0,
     frames: [],
@@ -30,7 +30,7 @@ test('cpu profile contains the hot functions and the worker thread', () => {
 
   const top = m.topFunctions(counts).map((f) => m.fns[f.fn].func);
 
-  assert.ok(m.samples.length > 1000, `samples ${m.samples.length}`);
+  assert.ok(m.samples.sampleCount > 1000, `samples ${m.samples.sampleCount}`);
   for (const fn of ['fib', 'checksum', 'parse_rows']) assert.ok(top.includes(fn), `${fn} missing in ${top.slice(0, 10).join()}`);
   assert.ok(m.threadList().some((t) => t.name === 'checksum-worker'));
 });
@@ -172,38 +172,63 @@ test('frames are classified as user code or stdlib', () => {
   assert.equal(m.frames.find((f) => f.file.endsWith('async_storm.py'))?.cat, Cat.User);
 });
 
-test('toDelta returns typed sample columns of exactly the sample count', () => {
+/** The run columns of a model's `toDelta()` (always format 2). */
+function runColumns(m: ProfileModel): RunColumns {
+  const { samples } = m.toDelta();
+  assert.ok('ticks' in samples);
+  return samples;
+}
+
+test('toDelta returns typed run columns exactly as long as their content', () => {
   const m = loadProfile('cpu');
 
-  const { samples } = m.toDelta();
+  const samples = runColumns(m);
 
-  assert.ok(samples.t instanceof Float64Array && samples.tid instanceof Float64Array);
-  assert.ok(samples.stack instanceof Int32Array && samples.status instanceof Uint8Array);
-  assert.deepEqual([samples.t.length, samples.tid.length, samples.stack.length, samples.status.length], Array(4).fill(m.samples.length));
+  assert.ok(samples.ticks instanceof Float64Array && samples.tick instanceof Int32Array && samples.count instanceof Uint8Array);
+  assert.ok(samples.thread instanceof Uint32Array && samples.stack instanceof Int32Array && samples.status instanceof Uint8Array);
+  assert.equal(samples.ticks.length, m.samples.tickCount);
+  assert.deepEqual(
+    [samples.tick.length, samples.count.length, samples.thread.length, samples.stack.length, samples.status.length],
+    Array(5).fill(m.samples.length),
+  );
+  assert.deepEqual(samples.threadIds, m.samples.threadIds);
 });
 
 test('applyDelta into an empty model takes typed columns over without copying', () => {
   const delta = loadProfile('cpu').toDelta();
+  assert.ok('ticks' in delta.samples);
 
   const copy = new ProfileModel();
   copy.applyDelta(delta);
 
-  assert.equal(copy.samples.t, delta.samples.t);
-  assert.equal(copy.samples.status, delta.samples.status);
+  assert.equal(copy.samples.tick, delta.samples.tick);
+  assert.equal(copy.samples.ticks, delta.samples.ticks);
 });
 
-test('samples appended after taking columns over are kept in order', () => {
+test('runs appended after taking columns over extend the timeline', () => {
   const m = loadProfile('cpu');
   const copy = new ProfileModel();
   copy.applyDelta(m.toDelta());
-  const last = m.samples.t[m.samples.length - 1];
-  const live = { ...emptyDelta(), samples: { t: [last + 1, last + 2], tid: [7, 7], stack: [0, 0], status: [3, 0] } };
+  const last = m.samples.lastTime;
+  const firstNewTick = m.samples.tickCount;
+  const live: Delta = {
+    ...emptyDelta(),
+    samples: { ticks: [last + 1, last + 2], threadIds: [], tick: [firstNewTick], count: [2], thread: [0], stack: [0], status: [3] },
+  };
 
   copy.applyDelta(live);
 
-  assert.equal(copy.samples.length, m.samples.length + 2);
-  assert.deepEqual(Array.from(copy.samples.t.subarray(copy.samples.length - 3, copy.samples.length)), [last, last + 1, last + 2]);
-  assert.equal(copy.samples.lowerBound(last + 2), copy.samples.length - 1);
+  assert.equal(copy.samples.sampleCount, m.samples.sampleCount + 2);
+  assert.equal(copy.duration, Math.max(copy.now, last + 2));
+  assert.deepEqual([...copy.countStacks({ t0: last + 0.5 })], [[0, 2]]);
+  assert.deepEqual([...copy.countStacks({ t0: last + 1.5 })], [[0, 1]]);
+});
+
+test('a format 1 profile keeps every sample as a run of one', () => {
+  const m = loadProfile('cpu');
+
+  assert.equal(m.samples.length, m.samples.sampleCount);
+  assert.ok(m.samples.tickCount < m.samples.sampleCount, 'samples of one tick share it');
 });
 
 test('toDelta round-trips through applyDelta', () => {
@@ -212,7 +237,8 @@ test('toDelta round-trips through applyDelta', () => {
   const copy = new ProfileModel();
   copy.applyDelta(m.toDelta());
 
-  assert.equal(copy.samples.length, m.samples.length);
+  assert.equal(copy.samples.sampleCount, m.samples.sampleCount);
+  assert.equal(copy.asyncSamples.sampleCount, m.asyncSamples.sampleCount);
   assert.equal(copy.tasks.size, m.tasks.size);
   assert.deepEqual(copy.topFunctions(copy.countStacks({})).slice(0, 5), m.topFunctions(m.countStacks({})).slice(0, 5));
 });

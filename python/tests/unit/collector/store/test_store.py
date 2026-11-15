@@ -35,6 +35,29 @@ class StoreTestCase(unittest.TestCase):
         return FrameInfo((filename, LocationInfo((line, line, 0, 0)), funcname, None))
 
     @staticmethod
+    def expanded(wire: JsonView, table: str = "samples") -> list[tuple[float, int, int, int]]:
+        """The ``(t, thread id, stack, status)`` of every sample in a table, runs expanded."""
+        runs = wire.get_object(table)
+        ticks, thread_ids = runs.get_list("ticks"), runs.get_list("threadIds")
+        columns = zip(
+            runs.get_list("tick"),
+            runs.get_list("count"),
+            runs.get_list("thread"),
+            runs.get_list("stack"),
+            runs.get_list("status"),
+            strict=True,
+        )
+        samples: list[tuple[float, int, int, int]] = []
+        for tick, count, thread, stack, status in columns:
+            assert isinstance(tick, int) and isinstance(count, int) and isinstance(thread, int)
+            assert isinstance(stack, int) and isinstance(status, int)
+            for offset in range(count):
+                t, thread_id = ticks[tick + offset], thread_ids[thread]
+                assert isinstance(t, float) and isinstance(thread_id, int)
+                samples.append((t, thread_id, stack, status))
+        return sorted(samples)
+
+    @staticmethod
     def threads(*stacks: tuple[int, int, list[FrameInfo]]) -> list[InterpreterInfo]:
         return [InterpreterInfo((0, [ThreadInfo(stack) for stack in stacks]))]
 
@@ -83,10 +106,8 @@ class TestStoreSamples(StoreTestCase):
 
         self.store.add_thread_sample(12.3456, self.threads((101, 3, main_stack), (102, 0, worker_stack)))
 
-        samples = JsonView(self.store.delta()).get_object("samples")
-        self.assertEqual(samples.get_list("t"), [12.346, 12.346])
-        self.assertEqual(samples.get_list("tid"), [101, 102])
-        self.assertEqual(samples.get_list("status"), [3, 0])
+        samples = self.expanded(JsonView(self.store.delta()))
+        self.assertEqual([(t, tid, status) for t, tid, _, status in samples], [(12.346, 101, 3), (12.346, 102, 0)])
 
     def test_add_thread_sample_stores_stack_root_first(self) -> None:
         self.store.add_thread_sample(
@@ -104,12 +125,12 @@ class TestStoreSamples(StoreTestCase):
 
         self.store.add_thread_sample(1.0, self.threads((1, 0, agent_stack)))
 
-        self.assertEqual(JsonView(self.store.delta()).get_object("samples").get_list("t"), [])
+        self.assertEqual(self.expanded(JsonView(self.store.delta())), [])
 
     def test_add_thread_sample_skips_threads_without_frames(self) -> None:
         self.store.add_thread_sample(1.0, self.threads((1, 0, [])))
 
-        self.assertEqual(JsonView(self.store.delta()).get_object("samples").get_list("t"), [])
+        self.assertEqual(self.expanded(JsonView(self.store.delta())), [])
 
     def test_add_thread_sample_with_strip_launcher_removes_bootstrap_frames(self) -> None:
         self.store.describe_session(CollectorOptions(strip_launcher=True), None)
@@ -135,8 +156,8 @@ class TestStoreSamples(StoreTestCase):
 
         delta = JsonView(self.store.delta())
 
-        self.assertEqual(delta.get_object("asyncSamples").get_list("tid"), [55])
-        self.assertEqual(delta.get_object("samples").get_list("tid"), [])
+        self.assertEqual([tid for _, tid, _, _ in self.expanded(delta, "asyncSamples")], [55])
+        self.assertEqual(self.expanded(delta), [])
 
     def test_record_error_increments_error_count(self) -> None:
         self.store.record_error()
@@ -330,7 +351,7 @@ class TestStoreDeltas(StoreTestCase):
             {key: value for key, value in written.items() if key != "now"},
             {key: value for key, value in expected.items() if key != "now"},
         )
-        self.assertEqual(JsonView(written).get_object("samples").get_list("t"), [1.0])
+        self.assertEqual([t for t, _, _, _ in self.expanded(JsonView(written))], [1.0])
 
 
 class TestStoreSessionFacts(StoreTestCase):

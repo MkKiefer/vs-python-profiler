@@ -5,7 +5,7 @@ one clock (milliseconds since session start, ``SessionClock``):
 
 * frames   - interned ``[file, func, line, category]``           (``StackTable``)
 * stacks   - prefix tree ``[parent_stack, frame]``                (``StackTable``)
-* samples  - columnar ``t / tid / stack / status`` (thread stacks) (``SampleColumns``)
+* samples  - runs of equal samples ``tick / count / thread / stack / status`` (``SampleRuns``)
 * async    - same layout, stacks reconstructed per asyncio task
 * tracks   - named time series ``[[t, value], ...]``              (``Track``)
 * tasks, task_events                                               (``TaskTable``)
@@ -30,7 +30,7 @@ from _vspyprof.collector.store.append_log import AppendLog
 from _vspyprof.collector.store.async_stack import AsyncStack
 from _vspyprof.collector.store.memory_snapshot import MemorySnapshot
 from _vspyprof.collector.store.profile_meta import ProfileMeta
-from _vspyprof.collector.store.sample_columns import SampleColumns
+from _vspyprof.collector.store.sample_runs import Sample, SampleRuns
 from _vspyprof.collector.store.sampling_stats import SamplingStats
 from _vspyprof.collector.store.session_clock import SessionClock
 from _vspyprof.collector.store.stack_table import SourceFrame, StackTable
@@ -49,7 +49,7 @@ class Store:
     """
 
     FORMAT = "vspyprof"
-    FORMAT_VERSION = 1
+    FORMAT_VERSION = 2  # 2: run-length encoded samples (``SampleRuns``)
     NO_STACK = StackTable.NO_STACK
 
     def __init__(self, clock: SessionClock, stacks: StackTable) -> None:
@@ -57,8 +57,8 @@ class Store:
         self._stacks = stacks
         self._lock = threading.RLock()
 
-        self._samples = SampleColumns()
-        self._async_samples = SampleColumns()
+        self._samples = SampleRuns()
+        self._async_samples = SampleRuns()
         self._tracks: dict[Track, AppendLog[list[float]]] = {}  # rows are [t, value]
         self._gc: AppendLog[list[float]] = AppendLog()  # rows are [t, duration ms, generation, collected, heap size]
         self._markers: AppendLog[list[float | str]] = AppendLog()  # rows are [t, name]
@@ -100,23 +100,27 @@ class Store:
         """Record one sampling tick: the current stack of every thread."""
         t = round(t, 3)
         with self._lock:
+            samples: list[Sample] = []
             for interpreter in interpreters:
                 for thread in interpreter.threads:
                     if not thread.frame_info:
                         continue
                     stack = self._stacks.intern_sampled(thread.frame_info, strip=True)
                     if not stack.internal:  # the profiler's own threads are left out
-                        self._samples.append(t, thread.thread_id, stack.stack_id, thread.status)
+                        samples.append(Sample(thread.thread_id, stack.stack_id, thread.status))
+            self._samples.add_tick(t, samples)
             self._sample_count += 1
 
     def add_async_sample(self, t: float, stacks: Iterable[AsyncStack]) -> None:
         """Record the async-aware stacks of one tick, one per running leaf task."""
         t = round(t, 3)
         with self._lock:
+            samples: list[Sample] = []
             for async_stack in stacks:
                 stack = self._stacks.intern_sampled(async_stack.frames_leaf_first, strip=False)
                 if not stack.internal:
-                    self._async_samples.append(t, async_stack.thread_id, stack.stack_id, 0)
+                    samples.append(Sample(async_stack.thread_id, stack.stack_id, 0))
+            self._async_samples.add_tick(t, samples)
 
     def record_error(self) -> None:
         """Count a discarded sample (torn read)."""

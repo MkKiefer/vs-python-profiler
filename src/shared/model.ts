@@ -6,6 +6,10 @@
  * and saved `.vspyprof` files have the same shape.
  */
 
+import { SampleTable, type SampleColumns } from './sampleTable';
+
+export { MAX_RUN, SampleTable, type LegacyColumns, type RunColumns, type SampleColumns } from './sampleTable';
+
 export const enum Cat {
   User = 0,
   Lib = 1,
@@ -19,23 +23,9 @@ export const STATUS_ON_CPU = 2;
 export const STATUS_GIL_REQUESTED = 8;
 
 const DEFAULT_RATE_HZ = 1000;
-/** sample table capacity: the first allocation, then growth by this factor */
-const MIN_CAPACITY = 1024;
-const GROWTH = 1.5;
 
 export type Mode = 'wall' | 'cpu' | 'gil';
 export type Source = 'threads' | 'async';
-
-/**
- * Sample columns of a delta. JSON (collector deltas, saved files) gives plain arrays; `toDelta()` gives
- * typed arrays of exactly the sample count, which `postMessage` carries as binary instead of JSON.
- */
-export interface Columns {
-  t: number[] | Float64Array;
-  tid: number[] | Float64Array;
-  stack: number[] | Int32Array;
-  status: number[] | Uint8Array;
-}
 
 export interface TaskRec {
   id: number;
@@ -98,8 +88,8 @@ export interface Delta {
   now: number;
   frames: [string, string, number, number][];
   stacks: [number, number][];
-  samples: Columns;
-  asyncSamples: Columns;
+  samples: SampleColumns;
+  asyncSamples: SampleColumns;
   tracks: Record<string, [number, number][]>;
   gc: GcRecord[];
   markers: Marker[];
@@ -118,7 +108,7 @@ export interface Delta {
 
 /** What saved profiles say in `format` and the newest `version` this code reads. */
 export const PROFILE_FORMAT = 'vspyprof';
-export const PROFILE_FORMAT_VERSION = 1;
+export const PROFILE_FORMAT_VERSION = 2; // 2: run-length encoded samples (`SampleTable`); 1 is still read
 
 export interface SamplingStats {
   samples: number;
@@ -195,93 +185,6 @@ function appendAll<T>(target: T[], items: readonly T[]): void {
   for (const item of items) target.push(item);
 }
 
-class SampleTable {
-  t: Float64Array = new Float64Array(MIN_CAPACITY);
-  tid: Float64Array = new Float64Array(MIN_CAPACITY);
-  stack: Int32Array = new Int32Array(MIN_CAPACITY);
-  status: Uint8Array = new Uint8Array(MIN_CAPACITY);
-  length = 0;
-
-  append(c: Columns): void {
-    const n = c.t.length;
-    if (!n) return;
-    if (this.length === 0 && this.adopt(c)) return;
-    this.reserve(this.length + n);
-    const base = this.length;
-    for (let i = 0; i < n; i++) {
-      this.t[base + i] = c.t[i];
-      this.tid[base + i] = c.tid[i];
-      this.stack[base + i] = c.stack[i];
-      this.status[base + i] = c.status[i];
-    }
-    this.length += n;
-  }
-
-  /**
-   * Take typed columns over as the table instead of copying them: a dashboard's `init` holds the whole
-   * profile, and copying it would hold it twice. The caller hands them over and must not change them.
-   */
-  private adopt(c: Columns): boolean {
-    if (
-      !(c.t instanceof Float64Array) ||
-      !(c.tid instanceof Float64Array) ||
-      !(c.stack instanceof Int32Array) ||
-      !(c.status instanceof Uint8Array)
-    ) {
-      return false;
-    }
-    this.t = c.t;
-    this.tid = c.tid;
-    this.stack = c.stack;
-    this.status = c.status;
-    this.length = c.t.length;
-    return true;
-  }
-
-  private reserve(n: number): void {
-    if (n <= this.t.length) return;
-    // grow by half: tables only grow, and doubling leaves up to half of a large table unused
-    let cap = Math.max(this.t.length, MIN_CAPACITY);
-    while (cap < n) cap = Math.ceil(cap * GROWTH);
-    const used = this.length;
-    const t = new Float64Array(cap);
-    t.set(this.t.subarray(0, used));
-    const tid = new Float64Array(cap);
-    tid.set(this.tid.subarray(0, used));
-    const stack = new Int32Array(cap);
-    stack.set(this.stack.subarray(0, used));
-    const status = new Uint8Array(cap);
-    status.set(this.status.subarray(0, used));
-    this.t = t;
-    this.tid = tid;
-    this.stack = stack;
-    this.status = status;
-  }
-
-  /** first index with t >= value */
-  lowerBound(value: number): number {
-    let lo = 0;
-    let hi = this.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.t[mid] < value) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  }
-
-  /** Copies of the columns, exactly `length` long (21 bytes per sample; `Array.from` would take far more). */
-  toColumns(): Columns {
-    const n = this.length;
-    return {
-      t: this.t.slice(0, n),
-      tid: this.tid.slice(0, n),
-      stack: this.stack.slice(0, n),
-      status: this.status.slice(0, n),
-    };
-  }
-}
-
 export class ProfileModel {
   frames: Frame[] = [];
   fns: Fn[] = [];
@@ -325,10 +228,11 @@ export class ProfileModel {
       this.stackParent.push(parent);
       this.stackFrame.push(frame);
     }
-    this.samples.append(d.samples);
+    const firstNewRow = this.samples.append(d.samples);
     this.asyncSamples.append(d.asyncSamples);
-    for (const tid of d.samples.tid) {
-      this.threadSampleCounts.set(tid, (this.threadSampleCounts.get(tid) ?? 0) + 1);
+    for (let row = firstNewRow; row < this.samples.length; row++) {
+      const tid = this.samples.threadId(row);
+      this.threadSampleCounts.set(tid, (this.threadSampleCounts.get(tid) ?? 0) + this.samples.count[row]);
     }
     for (const [name, pts] of Object.entries(d.tracks)) {
       let tr = this.tracks.get(name);
@@ -394,9 +298,7 @@ export class ProfileModel {
   }
 
   get duration(): number {
-    const n = this.samples.length;
-    const last = n ? this.samples.t[n - 1] : 0;
-    return Math.max(this.now, last);
+    return Math.max(this.now, this.samples.lastTime);
   }
 
   /** frame ids root → leaf for a stack id (memoised) */
@@ -423,16 +325,14 @@ export class ProfileModel {
   countStacks(f: Filter = {}): Map<number, number> {
     const table = f.source === 'async' ? this.asyncSamples : this.samples;
     const counts = new Map<number, number>();
-    const start = f.t0 !== undefined ? table.lowerBound(f.t0) : 0;
-    const end = f.t1 !== undefined ? table.lowerBound(f.t1) : table.length;
     const mask = f.source === 'async' ? 0 : f.mode === 'cpu' ? STATUS_ON_CPU : f.mode === 'gil' ? STATUS_HAS_GIL : 0;
-    const threads = f.threads && f.threads.size ? f.threads : null;
-    for (let i = start; i < end; i++) {
-      if (mask && !(table.status[i] & mask)) continue;
-      if (threads && !threads.has(table.tid[i])) continue;
-      const s = table.stack[i];
-      counts.set(s, (counts.get(s) ?? 0) + 1);
-    }
+    const allowed = threadFilter(table, f.threads);
+    table.forEachRun(f.t0, f.t1, (row, first, last) => {
+      if (mask && !(table.status[row] & mask)) return;
+      if (allowed && !allowed[table.thread[row]]) return;
+      const s = table.stack[row];
+      counts.set(s, (counts.get(s) ?? 0) + last - first + 1);
+    });
     return counts;
   }
 
@@ -558,26 +458,43 @@ export class ProfileModel {
     return out;
   }
 
-  /** samples per bucket, optionally split by status (for timelines) */
+  /**
+   * Samples per bucket (for timelines): optionally of one thread, and only those in a mode or, with
+   * `waitingForGil`, only those of a thread that asked for the GIL without holding it.
+   */
   histogram(
     buckets: number,
     t0: number,
     t1: number,
-    opts: { source?: Source; tid?: number; mode?: Mode } = {},
+    opts: { source?: Source; tid?: number; mode?: Mode; waitingForGil?: boolean } = {},
   ): Float64Array {
     const table = opts.source === 'async' ? this.asyncSamples : this.samples;
     const out = new Float64Array(buckets);
+    const thread = opts.tid === undefined ? -1 : table.indexOfThread(opts.tid);
+    if (opts.tid !== undefined && thread < 0) return out;
     const span = Math.max(1e-6, t1 - t0);
-    const start = table.lowerBound(t0);
-    const end = table.lowerBound(t1);
     const mask = opts.mode === 'cpu' ? STATUS_ON_CPU : opts.mode === 'gil' ? STATUS_HAS_GIL : 0;
-    for (let i = start; i < end; i++) {
-      if (opts.tid !== undefined && table.tid[i] !== opts.tid) continue;
-      if (mask && !(table.status[i] & mask)) continue;
-      const b = Math.min(buckets - 1, Math.floor(((table.t[i] - t0) / span) * buckets));
-      out[b]++;
-    }
+    const ticks = table.ticks;
+    table.forEachRun(t0, t1, (row, first, last) => {
+      if (thread >= 0 && table.thread[row] !== thread) return;
+      const status = table.status[row];
+      if (mask && !(status & mask)) return;
+      if (opts.waitingForGil && !isWaitingForGil(status)) return;
+      for (let tick = first; tick <= last; tick++) {
+        out[Math.min(buckets - 1, Math.floor(((ticks[tick] - t0) / span) * buckets))]++;
+      }
+    });
     return out;
+  }
+
+  /** Thread samples of a thread that asked for the GIL without holding it. */
+  countWaitingForGil(): number {
+    const table = this.samples;
+    let waiting = 0;
+    table.forEachRun(undefined, undefined, (row, first, last) => {
+      if (isWaitingForGil(table.status[row])) waiting += last - first + 1;
+    });
+    return waiting;
   }
 
   threadList(): { tid: number; name: string; samples: number }[] {
@@ -640,4 +557,19 @@ export class ProfileModel {
     const tr = this.tracks.get(name);
     return tr && tr.v.length ? tr.v[tr.v.length - 1] : undefined;
   }
+}
+
+function isWaitingForGil(status: number): boolean {
+  return (status & STATUS_GIL_REQUESTED) !== 0 && (status & STATUS_HAS_GIL) === 0;
+}
+
+/** Per thread index, whether a thread filter lets it through; `null` lets every thread through. */
+function threadFilter(table: SampleTable, threads: ReadonlySet<number> | null | undefined): Uint8Array | null {
+  if (!threads || !threads.size) return null;
+  const allowed = new Uint8Array(table.threadIds.length);
+  for (const tid of threads) {
+    const index = table.indexOfThread(tid);
+    if (index >= 0) allowed[index] = 1;
+  }
+  return allowed;
 }

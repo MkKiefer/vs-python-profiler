@@ -17,7 +17,7 @@ test('collapsed stack counts add up to the number of samples', () => {
     .split('\n')
     .map((line) => Number(line.slice(line.lastIndexOf(' ') + 1)));
 
-  assert.equal(counts.reduce((a, b) => a + b, 0), m.samples.length);
+  assert.equal(counts.reduce((a, b) => a + b, 0), m.samples.sampleCount);
 });
 
 test('speedscope export has one sampled profile per thread covering every sample', () => {
@@ -28,7 +28,8 @@ test('speedscope export has one sampled profile per thread covering every sample
   assert.equal(file.name, 'run');
   assert.equal(file.profiles.length, m.threadList().length);
   assert.ok(file.profiles.every((p) => p.type === 'sampled' && p.samples.length === p.weights.length));
-  assert.equal(file.profiles.reduce((n, p) => n + p.samples.length, 0), m.samples.length);
+  const weight = file.profiles.reduce((n, p) => n + p.weights.reduce((a, b) => a + b, 0), 0);
+  assert.ok(Math.abs(weight / m.sampleIntervalMs - m.samples.sampleCount) < 1e-6, "the weights add up to every sample");
 });
 
 test('speedscope samples reference shared frames', () => {

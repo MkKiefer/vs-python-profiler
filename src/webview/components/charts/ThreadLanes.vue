@@ -1,7 +1,6 @@
 <script setup lang="ts">
 /** Threads × time: on-CPU share (orange), waiting for the GIL (red underline), GC pauses and markers. */
 import { computed, ref, watch } from 'vue';
-import { STATUS_GIL_REQUESTED, STATUS_HAS_GIL } from '../../../shared/model';
 import { fmtMs } from '../../../shared/format';
 import { fitCanvas, truncate } from '../../charts/canvas';
 import { chartColor, chartToken } from '../../charts/colors';
@@ -39,30 +38,16 @@ const lanes = computed<Lane[]>(() => {
   const { model } = session;
   const { domain } = props;
   const n = buckets.value;
-  const samples = model.samples;
-  const start = samples.lowerBound(domain[0]);
-  const end = samples.lowerBound(domain[1]);
-  const span = Math.max(1e-9, domain[1] - domain[0]);
   return model
     .threadList()
     .slice(0, MAX_LANES)
-    .map(({ tid, name }) => {
-      const gilWait = new Float64Array(n);
-      for (let i = start; i < end; i++) {
-        if (samples.tid[i] !== tid) continue;
-        const status = samples.status[i];
-        if (status & STATUS_GIL_REQUESTED && !(status & STATUS_HAS_GIL)) {
-          gilWait[Math.min(n - 1, Math.floor(((samples.t[i] - domain[0]) / span) * n))]++;
-        }
-      }
-      return {
-        tid,
-        name,
-        wall: model.histogram(n, domain[0], domain[1], { tid }),
-        cpu: model.histogram(n, domain[0], domain[1], { tid, mode: 'cpu' }),
-        gilWait,
-      };
-    });
+    .map(({ tid, name }) => ({
+      tid,
+      name,
+      wall: model.histogram(n, domain[0], domain[1], { tid }),
+      cpu: model.histogram(n, domain[0], domain[1], { tid, mode: 'cpu' }),
+      gilWait: model.histogram(n, domain[0], domain[1], { tid, waitingForGil: true }),
+    }));
 });
 
 function width(): number {
