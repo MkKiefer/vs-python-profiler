@@ -8,6 +8,7 @@ lazy from _remote_debugging import FrameInfo
 
 from _vspyprof.collector.frames.frame_classifier import FrameClassifier
 from _vspyprof.collector.store.append_log import AppendLog
+from _vspyprof.collector.store.remote_text import RemoteText
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,8 +96,9 @@ class StackTable:
     def _frame_id(self, frame: SourceFrame) -> int:
         frame_id = self._frame_ids.get(frame)
         if frame_id is None:
-            frame_id = self._frame_ids[frame] = len(self.frames)
+            # classify first: if that raises, no id may point at a row that was never appended
             category = int(self._classifier.category(frame.filename))
+            frame_id = self._frame_ids[frame] = len(self.frames)
             self.frames.append([frame.filename, frame.function, frame.line, category])
         return frame_id
 
@@ -115,4 +117,4 @@ class StackTable:
             line = location
         else:
             line = location[0] or 0
-        return SourceFrame(frame.filename, frame.funcname, line)
+        return SourceFrame(RemoteText.checked(frame.filename), RemoteText.checked(frame.funcname), line)

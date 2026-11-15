@@ -30,6 +30,7 @@ from _vspyprof.collector.store.append_log import AppendLog
 from _vspyprof.collector.store.async_stack import AsyncStack
 from _vspyprof.collector.store.memory_snapshot import MemorySnapshot
 from _vspyprof.collector.store.profile_meta import ProfileMeta
+from _vspyprof.collector.store.remote_text import RemoteText
 from _vspyprof.collector.store.sample_runs import Sample, SampleRuns
 from _vspyprof.collector.store.sampling_stats import SamplingStats
 from _vspyprof.collector.store.session_clock import SessionClock
@@ -184,7 +185,7 @@ class Store:
                 observations.append(
                     TaskObservation(
                         address=task.task_id,
-                        name=task.task_name or f"Task-{task.task_id}",
+                        name=RemoteText.checked(task.task_name) if task.task_name else f"Task-{task.task_id}",
                         parent_address=awaiter if isinstance(awaiter, int) else None,
                         thread=info.thread_id,
                         stack=self._stacks.intern_sampled(frames, strip=False).stack_id,

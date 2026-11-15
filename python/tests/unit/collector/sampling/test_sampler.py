@@ -1,7 +1,10 @@
 import contextlib
 import io
+import itertools
 import threading
+import time
 import unittest
+from _remote_debugging import FrameInfo, InterpreterInfo, LocationInfo, ThreadInfo
 from unittest.mock import create_autospec
 
 from _vspyprof.collector.frames.frame_classifier import FrameClassifier
@@ -15,6 +18,7 @@ from _vspyprof.collector.sampling.tachyon import Tachyon
 from _vspyprof.collector.store.session_clock import SessionClock
 from _vspyprof.collector.store.stack_table import StackTable
 from _vspyprof.collector.store.store import Store
+from tests.unit.torn_text import TornText
 
 
 class TestSampler(unittest.TestCase):
@@ -55,6 +59,26 @@ class TestSampler(unittest.TestCase):
         self.listener.on_sampler_error.assert_called_once_with("Sampling stopped: RuntimeError: reader broke")
         self.listener.on_target_exit.assert_not_called()
         self.stats_reader.close.assert_called_once_with()
+
+    def test_torn_frame_text_is_discarded_and_sampling_goes_on(self) -> None:
+        def threads(filename: str) -> list[InterpreterInfo]:
+            frame = FrameInfo((filename, LocationInfo((1, 1, 0, 0)), "main", None))
+            return [InterpreterInfo((0, [ThreadInfo((1, 0, [frame]))]))]
+
+        self.tachyon.sample_threads.side_effect = itertools.chain(
+            [threads(TornText("/srv/app.py"))], itertools.repeat(threads("/srv/app.py"))
+        )
+        self.tachyon.is_alive.return_value = True
+
+        self.sampler.start()
+        deadline = time.monotonic() + self._WAIT
+        while self.store.stats().samples < 5 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.sampler.stop()
+
+        self.assertGreaterEqual(self.store.stats().samples, 5)
+        self.assertEqual(self.store.stats().errors, 1)
+        self.listener.on_sampler_error.assert_not_called()
 
     def test_target_gone_reports_target_exit(self) -> None:
         self.tachyon.sample_threads.side_effect = ProcessLookupError()

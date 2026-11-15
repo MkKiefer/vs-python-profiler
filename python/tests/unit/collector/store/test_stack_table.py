@@ -3,7 +3,9 @@ import unittest
 from _remote_debugging import FrameInfo, LocationInfo
 
 from _vspyprof.collector.frames.frame_classifier import FrameCategory, FrameClassifier
+from _vspyprof.collector.store.remote_text import CorruptTextError
 from _vspyprof.collector.store.stack_table import InternedStack, SourceFrame, StackTable
+from tests.unit.torn_text import TornText
 
 ROOT = os.path.abspath(os.sep)
 INTERNAL_DIR = os.path.join(ROOT, "ext", "_vspyprof")
@@ -30,6 +32,16 @@ class TestStackTable(unittest.TestCase):
             stack, frame_id = stacks[stack]
             names.append(str(frames[frame_id][1]))
         return names[::-1]
+
+    def test_intern_sampled_with_torn_text_raises_and_leaves_table_unchanged(self) -> None:
+        torn = self.frame(TornText(APP), "main", 1)
+
+        with self.assertRaises(CorruptTextError):
+            self.table.intern_sampled([torn], strip=False)
+        interned = self.table.intern_sampled([self.frame(APP, "work", 5)], strip=False)
+
+        self.assertEqual(len(self.table.frames), 1)
+        self.assertEqual(self.function_names(interned), ["work"])
 
     def test_intern_with_same_frames_returns_same_stack(self) -> None:
         path = [SourceFrame(APP, "main", 1), SourceFrame(APP, "work", 5)]

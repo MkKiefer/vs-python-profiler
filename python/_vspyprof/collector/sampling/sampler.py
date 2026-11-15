@@ -186,7 +186,10 @@ class Sampler:
                     running.add(info.awaited_by[0].task_id)
         except Tachyon.READ_ERRORS:
             pass  # states fall back to "waiting" for this tick
-        self._store.update_tasks(t, all_tasks, running)
+        try:
+            self._store.update_tasks(t, all_tasks, running)
+        except Tachyon.READ_ERRORS:
+            return  # a task's name or stack was read torn (see RemoteText): try again next time
 
     def _sample_process_stats(self, now: float, t: float) -> None:
         stats = self._stats_reader.read()
