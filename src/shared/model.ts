@@ -105,7 +105,13 @@ export interface Delta {
   meta?: ProfileMeta;
   stats?: SamplingStats;
   format?: string;
+  /** profile format version (`Store.FORMAT_VERSION` in `collector/store/store.py`) */
+  version?: number;
 }
+
+/** What saved profiles say in `format` and the newest `version` this code reads. */
+export const PROFILE_FORMAT = 'vspyprof';
+export const PROFILE_FORMAT_VERSION = 1;
 
 export interface SamplingStats {
   samples: number;
@@ -340,7 +346,8 @@ export class ProfileModel {
       objectCounts: this.objectCounts,
       meta: this.meta,
       stats: this.stats,
-      format: 'vspyprof',
+      format: PROFILE_FORMAT,
+      version: PROFILE_FORMAT_VERSION,
     };
   }
 
