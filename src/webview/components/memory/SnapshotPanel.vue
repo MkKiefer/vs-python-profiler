@@ -25,7 +25,9 @@ const WEIGHTS: SegmentOption<MemoryWeight>[] = [
   { value: 'count', label: 'Blocks' },
 ];
 
-const snapshots = computed(() => session.model.snapshots);
+// a copy: live deltas push into the model's array in place, and a computed that returned the same
+// array after a redraw would look unchanged to Vue, so a new snapshot only showed after a remount
+const snapshots = computed(() => [...session.model.snapshots]);
 
 // once a second snapshot exists, compare with the first by default
 watch(

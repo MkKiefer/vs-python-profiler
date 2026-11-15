@@ -99,6 +99,18 @@ describe('memory tab', () => {
     expect(wrapper.text()).not.toContain('Growth before → after');
   });
 
+  it('test_live_snapshot_appears_without_leaving_the_tab', async () => {
+    const { wrapper, router, host } = await mountApp('/memory', { fixture: 'leaky', live: true, capabilities: { agent: true, tracemalloc: true } });
+    const third = { id: 99, label: 'third', t: 59_000, totalSize: 1, totalCount: 1, otherSize: 0, otherCount: 0, traced: 1, peak: 1, entries: [] };
+
+    host.emit({ type: 'delta', data: { ...statsDelta(60_000, 1000), snapshots: [third] } });
+    await settle(router);
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Growth before → third'), { timeout: 2000 });
+    const options = wrapper.findAll('select')[0].findAll('option').map((o) => o.text());
+    expect(options.some((text) => text.startsWith('third'))).toBe(true);
+  });
+
   it('test_profile_without_snapshots_explains_how_to_get_them', async () => {
     const { wrapper } = await mountApp('/memory', { fixture: 'cpu' });
 
