@@ -57,7 +57,27 @@ generated notes and a signed build provenance attestation. Verify a download wit
 `gh attestation verify python-profiler-0.2.0.vsix --repo <owner>/<repo>`, install it with
 `code --install-extension python-profiler-0.2.0.vsix`.
 
-Hardening: the workflows grant the token only what each job needs (only the final `publish`
+After the GitHub release, the `marketplace` and `open-vsx` jobs publish the same `.vsix` to the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/) and [Open VSX](https://open-vsx.org/)
+(used by VSCodium, Cursor, Windsurf and Gitpod). Each is skipped with a notice until its token
+exists. One-time setup:
+
+1. Marketplace: create the publisher `vspyprof` (the `publisher` in `package.json`) at
+   <https://marketplace.visualstudio.com/manage>, then an Azure DevOps personal access token with
+   the **Marketplace → Manage** scope, and store it as the `VSCE_PAT` secret of the `release`
+   environment.
+2. Open VSX: sign in at <https://open-vsx.org/> with GitHub, sign the publisher agreement, create the
+   namespace once (`npx ovsx create-namespace vspyprof -p <token>`), and store the access token as
+   `OVSX_PAT` in the `release` environment.
+
+Before each release, move the `[Unreleased]` entries in `CHANGELOG.md` under the new version; the
+Marketplace shows that file as the extension's changelog.
+
+The README's screenshots are linked from the repository (`raw/HEAD/media/screenshots/…`), so they
+show on the Marketplace only while the repository is public. To refresh them, record a profile of a
+realistic program and screenshot each dashboard tab at 1400 × 880 in a dark theme.
+
+Hardening: the workflows grant the token only what each job needs (only the `publish`
 job can write, and it runs no repository code), pin actions to commit SHAs (Dependabot
 updates them), install npm packages with `--ignore-scripts`, and build releases without the
 npm cache. Recommended repository settings: a tag ruleset restricting who may create `v*`
