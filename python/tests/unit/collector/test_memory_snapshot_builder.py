@@ -11,7 +11,7 @@ from _vscode_pyprof.collector.store.memory_snapshot import AllocationSite
 from _vscode_pyprof.collector.store.session_clock import SessionClock
 from _vscode_pyprof.collector.store.stack_table import StackTable
 from _vscode_pyprof.collector.store.store import Store
-from _vscode_pyprof.wire import WireReader
+from tests.unit.json_view import JsonView
 
 ROOT = os.path.abspath(os.sep)
 INTERNAL_DIR = os.path.join(ROOT, "ext", "_vscode_pyprof")
@@ -63,7 +63,7 @@ class TestMemorySnapshotBuilder(unittest.TestCase):
 
         snapshot = self.builder.build(self.heap(Allocation([SourceLine(__file__, line)], 300, 3)), "A")
 
-        frames = WireReader(self.store.full()).get_list("frames")
+        frames = JsonView(self.store.full()).get_list("frames")
         self.assertEqual(snapshot.sites, (AllocationSite(stack=0, size=300, count=3),))
         self.assertEqual(frames, [[__file__, "TestMemorySnapshotBuilder.setUp", line, 0]])
 

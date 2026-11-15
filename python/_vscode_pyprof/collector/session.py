@@ -11,9 +11,17 @@ import threading
 from dataclasses import replace
 
 from _vscode_pyprof import PACKAGE_DIR, PROTOCOL_VERSION
+from _vscode_pyprof.agent_protocol.commands import (
+    AgentRequest,
+    CountObjects,
+    SetAsyncioDebug,
+    StartTracing,
+    StopTracing,
+    TakeSnapshot,
+)
 from _vscode_pyprof.agent_protocol.hello import ThreadName
 from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
-from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType, EventKind
+from _vscode_pyprof.agent_protocol.names import EventKind
 from _vscode_pyprof.agent_protocol.replies import (
     Acknowledgement,
     AsyncioDebugStatus,
@@ -37,7 +45,19 @@ from _vscode_pyprof.collector.notifications import (
 from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.collector.profile_writer import ProfileWriter
 from _vscode_pyprof.collector.protocol import RpcMethod, RpcNotification, SessionState, StopReason
-from _vscode_pyprof.collector.rpc import RpcError, RpcHandler, RpcServer
+from _vscode_pyprof.collector.rpc import RpcError, RpcServer
+from _vscode_pyprof.collector.rpc_params import (
+    AsyncioDebugParams,
+    AttachParams,
+    InitializeParams,
+    MarkParams,
+    NoParams,
+    ObjectCountsParams,
+    SaveParams,
+    SnapshotParams,
+    StopParams,
+    TracemallocParams,
+)
 from _vscode_pyprof.collector.rpc_results import (
     AttachResult,
     Features,
@@ -53,7 +73,7 @@ from _vscode_pyprof.collector.sampling.tachyon import Tachyon, TachyonError
 from _vscode_pyprof.collector.store.session_clock import SessionClock
 from _vscode_pyprof.collector.store.store import Store
 from _vscode_pyprof.collector.store.track import Track
-from _vscode_pyprof.wire import JsonObject, WireReader
+from _vscode_pyprof.wire import WireMessage
 
 
 class CollectorSession(AgentListener, SamplerListener):
@@ -66,8 +86,6 @@ class CollectorSession(AgentListener, SamplerListener):
     _FLUSH_INTERVAL = 0.25  # seconds between live deltas
     _EXIT_DELAY = 0.2  # lets the shutdown response reach the extension
     _SLOW_AGENT_TIMEOUT = 120.0  # snapshots and object counts walk the whole heap
-    _DEFAULT_SNAPSHOT_LIMIT = 3000
-    _DEFAULT_OBJECT_COUNT_LIMIT = 60
 
     def __init__(
         self,
@@ -98,28 +116,25 @@ class CollectorSession(AgentListener, SamplerListener):
 
     def start(self) -> None:
         """Register the RPC API and start accepting agents."""
-        handlers: dict[RpcMethod, RpcHandler] = {
-            RpcMethod.INITIALIZE: self._initialize,
-            RpcMethod.ATTACH: self._attach,
-            RpcMethod.STOP: self._stop,
-            RpcMethod.STATUS: self._status,
-            RpcMethod.TRACEMALLOC: self._set_tracemalloc,
-            RpcMethod.SNAPSHOT: self._take_snapshot,
-            RpcMethod.OBJECT_COUNTS: self._count_objects,
-            RpcMethod.ASYNCIO_DEBUG: self._set_asyncio_debug,
-            RpcMethod.MARK: self._mark,
-            RpcMethod.SAVE: self._save,
-            RpcMethod.SHUTDOWN: self._shutdown,
-        }
-        for method, handler in handlers.items():
-            self._rpc.register(method, handler)
+        rpc = self._rpc
+        rpc.register(RpcMethod.INITIALIZE, InitializeParams, self._initialize)
+        rpc.register(RpcMethod.ATTACH, AttachParams, self._attach)
+        rpc.register(RpcMethod.STOP, StopParams, self._stop)
+        rpc.register(RpcMethod.STATUS, NoParams, self._status)
+        rpc.register(RpcMethod.TRACEMALLOC, TracemallocParams, self._set_tracemalloc)
+        rpc.register(RpcMethod.SNAPSHOT, SnapshotParams, self._take_snapshot)
+        rpc.register(RpcMethod.OBJECT_COUNTS, ObjectCountsParams, self._count_objects)
+        rpc.register(RpcMethod.ASYNCIO_DEBUG, AsyncioDebugParams, self._set_asyncio_debug)
+        rpc.register(RpcMethod.MARK, MarkParams, self._mark)
+        rpc.register(RpcMethod.SAVE, SaveParams, self._save)
+        rpc.register(RpcMethod.SHUTDOWN, NoParams, self._shutdown)
         self._agent_server.start(self)
 
     # ---- RPC API: one handler per request of ``CollectorRequests`` in ``src/shared/protocol.ts``
-    def _initialize(self, params: WireReader) -> InitializeResult:
+    def _initialize(self, params: InitializeParams) -> InitializeResult:
         Tachyon.require()
-        self._options = CollectorOptions.from_wire(params.get_object("options"))
-        self._store.describe_session(self._options, params.get_optional_str("label"))
+        self._options = params.options
+        self._store.describe_session(self._options, params.label)
         self._start_pump()
         return InitializeResult(
             protocol=PROTOCOL_VERSION,
@@ -136,25 +151,24 @@ class CollectorSession(AgentListener, SamplerListener):
             ),
         )
 
-    def _attach(self, params: WireReader) -> AttachResult:
-        pid = params.get_int("pid")
-        sampler = self._start_sampler(pid)
+    def _attach(self, params: AttachParams) -> AttachResult:
+        sampler = self._start_sampler(params.pid)
         injected = False
         inject_error: str | None = None
-        if params.get_bool("inject", True) and self._agent is None:
+        if params.inject and self._agent is None:
             try:
-                self._injector.inject(pid, self._agent_server.address, self._options.agent_options())
+                self._injector.inject(params.pid, self._agent_server.address, self._options.agent_options())
                 injected = True
             except AgentInjectionError as error:  # sampling still works without the agent
                 inject_error = str(error)
                 self._store.add_event(EventKind.AGENT, f"Agent injection failed: {error}")
         return AttachResult(sampler.pid, injected, inject_error)
 
-    def _stop(self, params: WireReader) -> Acknowledgement:
-        self._stop_profiling(params.get_str("reason", StopReason.USER))
+    def _stop(self, params: StopParams) -> Acknowledgement:
+        self._stop_profiling(params.reason)
         return Acknowledgement()
 
-    def _status(self, _params: WireReader) -> StatusResult:
+    def _status(self, _params: NoParams) -> StatusResult:
         return StatusResult(
             state=self._state,
             pid=self._sampler.pid if self._sampler else None,
@@ -162,51 +176,44 @@ class CollectorSession(AgentListener, SamplerListener):
             stats=self._store.stats(),
         )
 
-    def _set_tracemalloc(self, params: WireReader) -> TracingStatus:
+    def _set_tracemalloc(self, params: TracemallocParams) -> TracingStatus:
         agent = self._require_agent()
-        enabled = params.get_bool("enabled", True)
-        self._options = self._options.with_tracemalloc(enabled)
-        if not enabled:
-            return TracingStatus.from_wire(self._ask(agent, AgentCommand.TRACEMALLOC_STOP))
-        frames = params.get_int("frames", self._options.tracemalloc_frames)
-        return TracingStatus.from_wire(self._ask(agent, AgentCommand.TRACEMALLOC_START, {"frames": frames}))
+        self._options = self._options.with_tracemalloc(params.enabled)
+        if not params.enabled:
+            return self._ask(agent, StopTracing(), TracingStatus)
+        frames = self._options.tracemalloc_frames if params.frames is None else params.frames
+        return self._ask(agent, StartTracing(frames), TracingStatus)
 
-    def _take_snapshot(self, params: WireReader) -> SnapshotResult:
+    def _take_snapshot(self, params: SnapshotParams) -> SnapshotResult:
         agent = self._require_agent()
-        limit = params.get_int("limit", self._DEFAULT_SNAPSHOT_LIMIT)
-        reply = self._ask(agent, AgentCommand.SNAPSHOT, {"limit": limit}, self._SLOW_AGENT_TIMEOUT)
-        snapshot = self._snapshot_builder.build(HeapSnapshot.from_wire(reply), params.get_optional_str("label"))
+        heap = self._ask(agent, TakeSnapshot(params.limit), HeapSnapshot, self._SLOW_AGENT_TIMEOUT)
+        snapshot = self._snapshot_builder.build(heap, params.label)
         self._store.add_snapshot(snapshot)
         self._store.add_marker(snapshot.label, snapshot.t)
         return SnapshotResult(snapshot.snapshot_id, snapshot.total_size, len(snapshot.sites))
 
-    def _count_objects(self, params: WireReader) -> ObjectCounts:
+    def _count_objects(self, params: ObjectCountsParams) -> ObjectCounts:
         agent = self._require_agent()
-        limit = params.get_int("limit", self._DEFAULT_OBJECT_COUNT_LIMIT)
-        reply = self._ask(agent, AgentCommand.OBJECT_COUNTS, {"limit": limit}, self._SLOW_AGENT_TIMEOUT)
-        counted = ObjectCounts.from_wire(reply)
+        counted = self._ask(agent, CountObjects(params.limit), ObjectCounts, self._SLOW_AGENT_TIMEOUT)
         counts = replace(counted, t=self._clock.from_perf_counter(counted.t))  # agent time -> session time
         self._store.add_object_counts(counts)
         return counts
 
-    def _set_asyncio_debug(self, params: WireReader) -> AsyncioDebugStatus:
+    def _set_asyncio_debug(self, params: AsyncioDebugParams) -> AsyncioDebugStatus:
         agent = self._require_agent()
-        enabled = params.get_bool("enabled", True)
-        self._options = self._options.with_asyncio_debug(enabled)
-        slow_ms = params.get_float("slowMs", self._options.slow_callback_ms)
-        reply = self._ask(agent, AgentCommand.ASYNCIO_DEBUG, {"enabled": enabled, "slowMs": slow_ms})
-        return AsyncioDebugStatus.from_wire(reply)
+        self._options = self._options.with_asyncio_debug(params.enabled)
+        slow_ms = self._options.slow_callback_ms if params.slow_ms is None else params.slow_ms
+        return self._ask(agent, SetAsyncioDebug(params.enabled, slow_ms), AsyncioDebugStatus)
 
-    def _mark(self, params: WireReader) -> Acknowledgement:
-        self._store.add_marker(params.get_str("name", "marker"))
+    def _mark(self, params: MarkParams) -> Acknowledgement:
+        self._store.add_marker(params.name)
         return Acknowledgement()
 
-    def _save(self, params: WireReader) -> SaveResult:
-        path = params.get_str("path")
+    def _save(self, params: SaveParams) -> SaveResult:
         self._flush()
-        return SaveResult(path, self._profile_writer.write(path, self._store.full()))
+        return SaveResult(params.path, self._profile_writer.write(params.path, self._store.full()))
 
-    def _shutdown(self, _params: WireReader) -> Acknowledgement:
+    def _shutdown(self, _params: NoParams) -> Acknowledgement:
         try:
             self._stop_profiling(StopReason.SHUTDOWN)
         finally:
@@ -233,9 +240,8 @@ class CollectorSession(AgentListener, SamplerListener):
             except RpcError as error:
                 self._notify(ErrorOccurred(str(error)))
 
-    def on_agent_message(self, connection: AgentConnection, message: WireReader) -> None:
-        if message.get_optional_str("type") == AgentMessageType.METRICS:
-            self._record_metrics(AgentMetrics.from_wire(message))
+    def on_agent_metrics(self, connection: AgentConnection, metrics: AgentMetrics) -> None:
+        self._record_metrics(metrics)
 
     def on_agent_close(self, connection: AgentConnection) -> None:
         if self._agent is connection:
@@ -308,15 +314,15 @@ class CollectorSession(AgentListener, SamplerListener):
         return agent
 
     @staticmethod
-    def _ask(
+    def _ask[R: WireMessage](
         agent: AgentConnection,
-        command: AgentCommand,
-        params: JsonObject | None = None,
+        request: AgentRequest,
+        reply_type: type[R],
         timeout: float = AgentConnection.DEFAULT_TIMEOUT,
-    ) -> WireReader:
-        """Run a command in the target; the caller reads the reply into the command's reply type."""
+    ) -> R:
+        """Run a command in the target and read its answer as ``reply_type``."""
         try:
-            return agent.request(command, params, timeout)
+            return agent.request(request, reply_type, timeout)
         except AgentError as error:
             raise RpcError(str(error)) from error
 

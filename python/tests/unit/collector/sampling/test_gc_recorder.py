@@ -8,7 +8,7 @@ from _vscode_pyprof.collector.sampling.tachyon import Tachyon
 from _vscode_pyprof.collector.store.session_clock import SessionClock
 from _vscode_pyprof.collector.store.stack_table import StackTable
 from _vscode_pyprof.collector.store.store import Store
-from _vscode_pyprof.wire import WireReader
+from tests.unit.json_view import JsonView
 
 
 class TestGcRecorder(unittest.TestCase):
@@ -26,7 +26,7 @@ class TestGcRecorder(unittest.TestCase):
         )
 
     def recorded(self) -> list[list[float]]:
-        rows = WireReader(self.store.full()).get_list("gc")
+        rows = JsonView(self.store.full()).get_list("gc")
         return [row for row in rows if isinstance(row, list)]
 
     def test_record_stores_collection_with_duration_in_milliseconds(self) -> None:

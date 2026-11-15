@@ -2,22 +2,21 @@ import unittest
 
 from _vscode_pyprof.agent_protocol.options import AgentOptions
 from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.wire import WireReader
 
 
 class TestCollectorOptions(unittest.TestCase):
     def test_from_wire_with_empty_object_uses_defaults(self) -> None:
-        options = CollectorOptions.from_wire(WireReader({}))
+        options = CollectorOptions.from_wire({})
 
         self.assertEqual(options, CollectorOptions())
 
     def test_from_wire_with_null_value_keeps_default(self) -> None:
-        options = CollectorOptions.from_wire(WireReader({"rateHz": None}))
+        options = CollectorOptions.from_wire({"rateHz": None})
 
         self.assertEqual(options.rate_hz, 1000)
 
     def test_from_wire_reads_camel_case_keys(self) -> None:
-        raw = WireReader({"rateHz": 250, "stripLauncher": True, "slowCallbackMs": 20, "tracemallocFrames": 4})
+        raw = {"rateHz": 250, "stripLauncher": True, "slowCallbackMs": 20, "tracemallocFrames": 4}
 
         options = CollectorOptions.from_wire(raw)
 
@@ -27,14 +26,14 @@ class TestCollectorOptions(unittest.TestCase):
         )
 
     def test_from_wire_with_zero_rate_clamps_to_one(self) -> None:
-        options = CollectorOptions.from_wire(WireReader({"rateHz": 0}))
+        options = CollectorOptions.from_wire({"rateHz": 0})
 
         self.assertEqual(options.rate_hz, 1)
 
     def test_to_wire_round_trips_through_from_wire(self) -> None:
         options = CollectorOptions(rate_hz=333, native=True, blocking=True, asyncio_debug=True)
 
-        restored = CollectorOptions.from_wire(WireReader(options.to_wire()))
+        restored = CollectorOptions.from_wire(options.to_wire())
 
         self.assertEqual(restored, options)
 

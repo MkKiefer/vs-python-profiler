@@ -11,7 +11,7 @@ from _vscode_pyprof.agent_protocol.replies import (
     TracingStatus,
     TypeCount,
 )
-from _vscode_pyprof.wire import WireError, WireReader
+from _vscode_pyprof.wire import WireError
 
 
 class TestTracingStatus(unittest.TestCase):
@@ -24,14 +24,14 @@ class TestTracingStatus(unittest.TestCase):
     def test_to_wire_round_trips_through_from_wire(self) -> None:
         for status in (TracingStatus(True, 16), TracingStatus(False)):
             with self.subTest(status=status):
-                self.assertEqual(TracingStatus.from_wire(WireReader(status.to_wire())), status)
+                self.assertEqual(TracingStatus.from_wire(status.to_wire()), status)
 
 
 class TestAsyncioDebugStatus(unittest.TestCase):
     def test_to_wire_round_trips_through_from_wire(self) -> None:
         status = AsyncioDebugStatus(enabled=True, loops=2)
 
-        self.assertEqual(AsyncioDebugStatus.from_wire(WireReader(status.to_wire())), status)
+        self.assertEqual(AsyncioDebugStatus.from_wire(status.to_wire()), status)
 
 
 class TestAllocation(unittest.TestCase):
@@ -50,10 +50,9 @@ class TestAllocation(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(WireError):
                 Allocation.from_wire(raw)
 
-    def test_from_wire_skips_frames_of_another_shape(self) -> None:
-        allocation = Allocation.from_wire([[["app.py", 3], ["broken"], "x"], 10, 1])
-
-        self.assertEqual(allocation.traceback, [SourceLine("app.py", 3)])
+    def test_from_wire_with_frame_of_another_shape_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.traceback\[1\] must have 2 items"):
+            Allocation.from_wire([[["app.py", 3], ["broken"]], 10, 1])
 
 
 class TestHeapSnapshot(unittest.TestCase):
@@ -71,17 +70,17 @@ class TestHeapSnapshot(unittest.TestCase):
         )
 
     def test_to_wire_round_trips_through_from_wire(self) -> None:
-        self.assertEqual(HeapSnapshot.from_wire(WireReader(self.snapshot.to_wire())), self.snapshot)
+        self.assertEqual(HeapSnapshot.from_wire(self.snapshot.to_wire()), self.snapshot)
 
     def test_from_wire_without_take_time_leaves_it_unknown(self) -> None:
         wire = self.snapshot.to_wire()
         wire["takeMs"] = None
 
-        self.assertIsNone(HeapSnapshot.from_wire(WireReader(wire)).take_ms)
+        self.assertIsNone(HeapSnapshot.from_wire(wire).take_ms)
 
     def test_from_wire_with_missing_total_raises_wire_error(self) -> None:
         with self.assertRaises(WireError):
-            HeapSnapshot.from_wire(WireReader({"t": 0.0, "top": []}))
+            HeapSnapshot.from_wire({"t": 0.0, "top": []})
 
 
 class TestObjectCounts(unittest.TestCase):
@@ -93,12 +92,11 @@ class TestObjectCounts(unittest.TestCase):
     def test_to_wire_round_trips_through_from_wire(self) -> None:
         counts = ObjectCounts(3.0, [TypeCount("dict", 10)])
 
-        self.assertEqual(ObjectCounts.from_wire(WireReader(counts.to_wire())), counts)
+        self.assertEqual(ObjectCounts.from_wire(counts.to_wire()), counts)
 
-    def test_from_wire_skips_entries_of_another_shape(self) -> None:
-        counts = ObjectCounts.from_wire(WireReader({"t": 3.0, "counts": [["dict", 10], ["list"], "x"]}))
-
-        self.assertEqual(counts.counts, [TypeCount("dict", 10)])
+    def test_from_wire_with_entry_of_another_shape_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.counts\[1\] must be an array"):
+            ObjectCounts.from_wire({"t": 3.0, "counts": [["dict", 10], "x"]})
 
 
 class TestSimpleReplies(unittest.TestCase):

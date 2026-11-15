@@ -5,17 +5,16 @@ import unittest
 from dataclasses import dataclass
 
 from _vscode_pyprof.collector.rpc import RpcError, RpcServer
-from _vscode_pyprof.wire import JsonObject, WireMessage, WireReader
+from _vscode_pyprof.collector.rpc_params import NoParams
+from _vscode_pyprof.wire import JsonObject, WireMessage
+from tests.unit.json_view import JsonView
 
 
 @dataclass(frozen=True, slots=True)
 class _Echo(WireMessage):
-    """The result of the test's ``echo`` method."""
+    """The params and the result of the test's ``echo`` method."""
 
     name: str
-
-    def to_wire(self) -> JsonObject:
-        return {"name": self.name}
 
 
 class _RecordingOutput(io.BytesIO):
@@ -43,13 +42,13 @@ class TestRpcServer(unittest.TestCase):
     def _serve(self, *requests: JsonObject) -> RpcServer:
         payload = "".join(json.dumps(request) + "\n" for request in requests).encode()
         server = RpcServer(io.BytesIO(payload), self.output)
-        server.register("echo", lambda params: _Echo(params.get_str("name")))
-        server.register("fail", self._raise_rpc_error)
+        server.register("echo", _Echo, lambda params: _Echo(params.name))
+        server.register("fail", NoParams, self._raise_rpc_error)
         server.serve()
         return server
 
     @staticmethod
-    def _raise_rpc_error(_params: WireReader) -> WireMessage:
+    def _raise_rpc_error(_params: NoParams) -> WireMessage:
         raise RpcError("not now")
 
     def test_serve_with_known_method_writes_result(self) -> None:
@@ -78,13 +77,13 @@ class TestRpcServer(unittest.TestCase):
 
         messages = self.output.wait_for_messages(1)
 
-        self.assertEqual(WireReader.of(messages[0]["error"]).get_str("type"), "WireError")
+        self.assertEqual(JsonView.of(messages[0]["error"]).get_str("type"), "WireError")
 
     def test_serve_with_invalid_json_line_skips_it(self) -> None:
         server = RpcServer(
             io.BytesIO(b'not json\n{"id": 5, "method": "echo", "params": {"name": "ok"}}\n'), self.output
         )
-        server.register("echo", lambda params: _Echo(params.get_str("name")))
+        server.register("echo", _Echo, lambda params: _Echo(params.name))
 
         server.serve()
 

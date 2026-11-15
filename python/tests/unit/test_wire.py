@@ -1,104 +1,140 @@
 import unittest
+from dataclasses import dataclass, field
+from enum import StrEnum
 
-from _vscode_pyprof.wire import JsonLines, WireError, WireReader
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage, WireRow, read_one_of, wire
 
 
-class TestWireReader(unittest.TestCase):
-    def test_of_with_json_object_wraps_its_keys(self) -> None:
-        reader = WireReader.of({"pid": 7})
+class _Color(StrEnum):
+    RED = "red"
+    BLUE = "blue"
 
-        self.assertEqual(reader.get_int("pid"), 7)
 
-    def test_of_with_non_object_reads_as_empty(self) -> None:
-        reader = WireReader.of([1, 2, 3])
+@dataclass(frozen=True)
+class _Point(WireRow):
+    x: int
+    y: int
 
-        self.assertEqual(reader.to_dict(), {})
 
-    def test_has_with_null_value_returns_false(self) -> None:
-        reader = WireReader({"label": None})
+@dataclass(frozen=True)
+class _Sample(WireMessage):
+    wire_type = "sample"
 
-        self.assertFalse(reader.has("label"))
+    rate_hz: int = field(metadata=wire(at_least=1))
+    label: str | None
+    points: list[_Point]
+    color: _Color = _Color.RED
+    perf_counter: float = field(default=0.0, metadata=wire("t"))
+    extra: JsonObject = field(default_factory=dict)
 
-    def test_get_int_with_integral_float_returns_int(self) -> None:
-        reader = WireReader({"rateHz": 250.0})
 
-        self.assertEqual(reader.get_int("rateHz"), 250)
+@dataclass(frozen=True)
+class _Other(WireMessage):
+    wire_type = "other"
 
-    def test_get_int_with_numeric_string_returns_int(self) -> None:
-        reader = WireReader({"pid": "4321"})
+    ok: bool = field(default=True, init=False)
 
-        self.assertEqual(reader.get_int("pid"), 4321)
 
-    def test_get_int_with_missing_key_returns_default(self) -> None:
-        reader = WireReader({})
+class TestWireMessageFromWire(unittest.TestCase):
+    def read(self, **values: object) -> _Sample:
+        return _Sample.from_wire({"type": "sample", "rateHz": 100, "points": []} | values)
 
-        self.assertEqual(reader.get_int("limit", 60), 60)
+    def test_from_wire_reads_camel_case_keys(self) -> None:
+        self.assertEqual(self.read(rateHz=250).rate_hz, 250)
 
-    def test_get_int_with_missing_key_and_no_default_raises_wire_error(self) -> None:
-        reader = WireReader({})
+    def test_from_wire_reads_the_key_named_in_wire_metadata(self) -> None:
+        self.assertEqual(self.read(t=2.5).perf_counter, 2.5)
 
-        with self.assertRaises(WireError) as ctx:
-            reader.get_int("pid")
+    def test_from_wire_with_missing_key_uses_default(self) -> None:
+        self.assertEqual((self.read().color, self.read().perf_counter), (_Color.RED, 0.0))
 
-        self.assertIn("pid", str(ctx.exception))
+    def test_from_wire_with_null_uses_default(self) -> None:
+        self.assertEqual(self.read(color=None).color, _Color.RED)
 
-    def test_get_int_with_boolean_raises_wire_error(self) -> None:
-        reader = WireReader({"pid": True})
+    def test_from_wire_with_missing_optional_field_reads_none(self) -> None:
+        self.assertIsNone(self.read().label)
 
+    def test_from_wire_with_missing_required_field_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.points is missing"):
+            _Sample.from_wire({"type": "sample", "rateHz": 100})
+
+    def test_from_wire_with_number_below_at_least_raises_it(self) -> None:
+        self.assertEqual(self.read(rateHz=0).rate_hz, 1)
+
+    def test_from_wire_with_integral_float_for_int_reads_int(self) -> None:
+        self.assertEqual(self.read(rateHz=250.0).rate_hz, 250)
+
+    def test_from_wire_with_fractional_float_for_int_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.rateHz must be an integer"):
+            self.read(rateHz=2.5)
+
+    def test_from_wire_with_boolean_for_int_raises_wire_error(self) -> None:
         with self.assertRaises(WireError):
-            reader.get_int("pid")
+            self.read(rateHz=True)
 
-    def test_get_float_with_integer_returns_float(self) -> None:
-        reader = WireReader({"slowMs": 50})
+    def test_from_wire_with_integer_for_float_reads_float(self) -> None:
+        self.assertEqual(self.read(t=3).perf_counter, 3.0)
 
-        self.assertEqual(reader.get_float("slowMs"), 50.0)
+    def test_from_wire_reads_enum_values(self) -> None:
+        self.assertIs(self.read(color="blue").color, _Color.BLUE)
 
-    def test_get_float_with_string_raises_wire_error(self) -> None:
-        reader = WireReader({"slowMs": "fast"})
+    def test_from_wire_with_unknown_enum_value_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.color must be one of \['red', 'blue'\]"):
+            self.read(color="green")
 
-        with self.assertRaises(WireError):
-            reader.get_float("slowMs", 100.0)
+    def test_from_wire_reads_lists_of_rows(self) -> None:
+        self.assertEqual(self.read(points=[[1, 2], [3, 4]]).points, [_Point(1, 2), _Point(3, 4)])
 
-    def test_get_bool_with_null_returns_default(self) -> None:
-        reader = WireReader({"inject": None})
+    def test_from_wire_with_bad_list_item_names_its_index(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.points\[1\] must have 2 items"):
+            self.read(points=[[1, 2], [3]])
 
-        self.assertTrue(reader.get_bool("inject", True))
+    def test_from_wire_passes_json_objects_through(self) -> None:
+        self.assertEqual(self.read(extra={"any": [1]}).extra, {"any": [1]})
 
-    def test_get_bool_with_false_overrides_true_default(self) -> None:
-        reader = WireReader({"inject": False})
+    def test_from_wire_ignores_unknown_keys(self) -> None:
+        self.assertEqual(self.read(unknown=1), self.read())
 
-        self.assertFalse(reader.get_bool("inject", True))
+    def test_from_wire_of_non_object_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$ must be an object"):
+            _Sample.from_wire([1, 2])
 
-    def test_get_str_with_non_string_raises_wire_error(self) -> None:
-        reader = WireReader({"path": 12})
+    def test_from_wire_with_another_type_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.type must be 'sample', got 'other'"):
+            self.read(type="other")
 
-        with self.assertRaises(WireError):
-            reader.get_str("path")
+    def test_from_wire_leaves_fields_without_init_at_their_default(self) -> None:
+        self.assertEqual(_Other.from_wire({"type": "other", "ok": False}), _Other())
 
-    def test_get_optional_str_with_non_string_returns_none(self) -> None:
-        reader = WireReader({"label": 12})
 
-        self.assertIsNone(reader.get_optional_str("label"))
+class TestWireMessageToWire(unittest.TestCase):
+    def test_to_wire_writes_camel_case_keys_rows_enums_and_type(self) -> None:
+        sample = _Sample(rate_hz=5, label="a", points=[_Point(1, 2)], color=_Color.BLUE, perf_counter=1.5)
 
-    def test_get_object_with_nested_object_returns_reader(self) -> None:
-        reader = WireReader({"options": {"rateHz": 100}})
+        self.assertEqual(
+            sample.to_wire(),
+            {"type": "sample", "rateHz": 5, "label": "a", "points": [[1, 2]], "color": "blue", "t": 1.5, "extra": {}},
+        )
 
-        self.assertEqual(reader.get_object("options").get_int("rateHz"), 100)
+    def test_to_wire_leaves_none_out(self) -> None:
+        self.assertNotIn("label", _Sample(rate_hz=5, label=None, points=[]).to_wire())
 
-    def test_get_object_with_missing_key_returns_empty_reader(self) -> None:
-        reader = WireReader({})
+    def test_to_wire_round_trips_through_from_wire(self) -> None:
+        sample = _Sample(rate_hz=5, label=None, points=[_Point(1, 2)], extra={"k": "v"})
 
-        self.assertEqual(reader.get_object("options").to_dict(), {})
+        self.assertEqual(_Sample.from_wire(sample.to_wire()), sample)
 
-    def test_get_list_with_non_list_returns_empty_list(self) -> None:
-        reader = WireReader({"threads": "nope"})
+    def test_to_wire_writes_fields_without_init(self) -> None:
+        self.assertEqual(_Other().to_wire(), {"ok": True, "type": "other"})
 
-        self.assertEqual(reader.get_list("threads"), [])
 
-    def test_get_str_list_converts_items_to_strings(self) -> None:
-        reader = WireReader({"argv": ["app.py", 8000]})
+class TestReadOneOf(unittest.TestCase):
+    def test_read_one_of_reads_the_class_its_type_names(self) -> None:
+        self.assertEqual(read_one_of({"type": "other"}, _Sample, _Other), _Other())
 
-        self.assertListEqual(reader.get_str_list("argv"), ["app.py", "8000"])
+    def test_read_one_of_with_unknown_type_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, "unexpected message type 'third'"):
+            read_one_of({"type": "third"}, _Sample, _Other)
 
 
 class TestJsonLines(unittest.TestCase):
@@ -127,27 +163,19 @@ class TestJsonLines(unittest.TestCase):
         self.lines.feed(b'{"id": ')
         self.lines.feed(b"7}\n")
 
-        message = self.lines.next_message()
-
-        assert message is not None
-        self.assertEqual(message.get_int("id"), 7)
+        self.assertEqual(self.lines.next_message(), {"id": 7})
 
     def test_next_message_with_several_lines_returns_them_in_order(self) -> None:
         self.lines.feed(b'{"id": 1}\n{"id": 2}\n')
 
-        first = self.lines.next_message()
-        second = self.lines.next_message()
+        messages = (self.lines.next_message(), self.lines.next_message(), self.lines.next_message())
 
-        assert first is not None and second is not None
-        self.assertEqual((first.get_int("id"), second.get_int("id"), self.lines.next_message()), (1, 2, None))
+        self.assertEqual(messages, ({"id": 1}, {"id": 2}, None))
 
     def test_next_message_skips_blank_lines(self) -> None:
         self.lines.feed(b'\n  \n{"id": 3}\n')
 
-        message = self.lines.next_message()
-
-        assert message is not None
-        self.assertEqual(message.get_int("id"), 3)
+        self.assertEqual(self.lines.next_message(), {"id": 3})
 
     def test_next_message_with_invalid_json_raises_value_error(self) -> None:
         self.lines.feed(b"not json\n")
@@ -155,13 +183,11 @@ class TestJsonLines(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.lines.next_message()
 
-    def test_next_message_with_non_object_reads_as_empty_message(self) -> None:
+    def test_next_message_with_non_object_raises_wire_error(self) -> None:
         self.lines.feed(b"[1, 2]\n")
 
-        message = self.lines.next_message()
-
-        assert message is not None
-        self.assertEqual(message.to_dict(), {})
+        with self.assertRaises(WireError):
+            self.lines.next_message()
 
 
 if __name__ == "__main__":

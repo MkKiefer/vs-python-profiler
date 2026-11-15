@@ -1,27 +1,22 @@
 import unittest
 
 from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
-from _vscode_pyprof.wire import WireError, WireReader
+from _vscode_pyprof.wire import WireError
 
 
 class TestThreadName(unittest.TestCase):
-    def test_list_from_wire_reads_ident_native_id_and_name(self) -> None:
-        threads = ThreadName.list_from_wire([[1, 101, "MainThread"], [2, 102, "worker"]])
+    def test_from_wire_reads_ident_native_id_and_name(self) -> None:
+        self.assertEqual(ThreadName.from_wire([1, 101, "MainThread"]), ThreadName(1, 101, "MainThread"))
 
-        self.assertEqual(threads, [ThreadName(1, 101, "MainThread"), ThreadName(2, 102, "worker")])
+    def test_from_wire_with_missing_id_reads_none(self) -> None:
+        self.assertEqual(ThreadName.from_wire([None, 101, "starting"]), ThreadName(None, 101, "starting"))
 
-    def test_list_from_wire_skips_entries_of_another_shape(self) -> None:
-        threads = ThreadName.list_from_wire(["MainThread", [1, 101], [2, 102, "worker"], None])
+    def test_from_wire_with_another_length_raises_wire_error(self) -> None:
+        with self.assertRaises(WireError):
+            ThreadName.from_wire([1, 101])
 
-        self.assertEqual(threads, [ThreadName(2, 102, "worker")])
-
-    def test_list_from_wire_with_missing_id_reads_none(self) -> None:
-        self.assertEqual(ThreadName.list_from_wire([[None, 101, "starting"]]), [ThreadName(None, 101, "starting")])
-
-    def test_to_wire_round_trips_through_list_from_wire(self) -> None:
-        thread = ThreadName(1, 101, "MainThread")
-
-        self.assertEqual(ThreadName.list_from_wire([thread.to_wire()]), [thread])
+    def test_to_wire_is_ident_native_id_and_name(self) -> None:
+        self.assertEqual(ThreadName(1, 101, "MainThread").to_wire(), [1, 101, "MainThread"])
 
     def test_ids_returns_native_id_before_ident(self) -> None:
         self.assertEqual(ThreadName(1, 101, "MainThread").ids(), [101, 1])
@@ -46,16 +41,20 @@ class TestAgentHello(unittest.TestCase):
         self.assertEqual(self.hello.to_wire()["type"], "hello")
 
     def test_to_wire_round_trips_through_from_wire(self) -> None:
-        self.assertEqual(AgentHello.from_wire(WireReader(self.hello.to_wire())), self.hello)
+        self.assertEqual(AgentHello.from_wire(self.hello.to_wire()), self.hello)
 
-    def test_from_wire_with_only_a_pid_leaves_the_rest_unknown(self) -> None:
-        hello = AgentHello.from_wire(WireReader({"pid": 12}))
+    def test_from_wire_without_optional_fields_reads_none(self) -> None:
+        hello = AgentHello.from_wire({"type": "hello", "token": "secret", "pid": 12, "argv": [], "threads": []})
 
-        self.assertEqual(hello, AgentHello("", 12, None, [], None, None, []))
+        self.assertEqual(hello, AgentHello("secret", 12, None, [], None, None, []))
 
     def test_from_wire_without_pid_raises_wire_error(self) -> None:
-        with self.assertRaises(WireError):
-            AgentHello.from_wire(WireReader({"token": "secret"}))
+        with self.assertRaisesRegex(WireError, r"\$\.pid is missing"):
+            AgentHello.from_wire({"type": "hello", "token": "secret", "argv": [], "threads": []})
+
+    def test_from_wire_of_another_message_type_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, "type must be 'hello'"):
+            AgentHello.from_wire(self.hello.to_wire() | {"type": "metrics"})
 
 
 if __name__ == "__main__":

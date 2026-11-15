@@ -6,7 +6,6 @@ import threading
 
 from _vscode_pyprof.agent_protocol.address import AgentAddress
 from _vscode_pyprof.agent_protocol.hello import AgentHello
-from _vscode_pyprof.agent_protocol.names import AgentMessageType
 from _vscode_pyprof.collector.agent.connection import AgentConnection
 from _vscode_pyprof.collector.agent.listener import AgentListener
 from _vscode_pyprof.wire import JsonLines
@@ -68,9 +67,7 @@ class AgentServer:
                 if not chunk:
                     raise OSError("closed during handshake")
                 lines.feed(chunk)
-            if message.get_optional_str("type") != AgentMessageType.HELLO:
-                raise OSError("the first message must be a hello")
-            hello = AgentHello.from_wire(message)
+            hello = AgentHello.from_wire(message)  # WireError (a ValueError) unless it is a hello
             if not self._is_authentic(hello):
                 raise OSError("bad agent token")
         except OSError, ValueError:

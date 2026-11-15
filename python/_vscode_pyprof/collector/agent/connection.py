@@ -6,10 +6,12 @@ import sys
 import threading
 import traceback
 
+from _vscode_pyprof.agent_protocol.commands import AgentRequest, CommandCall, CommandResult, Shutdown
 from _vscode_pyprof.agent_protocol.hello import AgentHello
-from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType
+from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
+from _vscode_pyprof.agent_protocol.replies import Acknowledgement
 from _vscode_pyprof.collector.agent.listener import AgentListener
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireReader
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage, read_one_of
 
 
 class AgentError(RuntimeError):
@@ -21,7 +23,7 @@ class _PendingRequest:
 
     def __init__(self) -> None:
         self.done = threading.Event()
-        self.reply: WireReader | None = None
+        self.reply: CommandResult | None = None
 
 
 class AgentConnection:
@@ -53,18 +55,21 @@ class AgentConnection:
     def start(self) -> None:
         threading.Thread(target=self._read_loop, name="pyprof-agent-reader", daemon=True).start()
 
-    def request(self, method: str, params: JsonObject | None = None, timeout: float = DEFAULT_TIMEOUT) -> WireReader:
-        """Run a command in the target process and return its result.
+    def request[R: WireMessage](
+        self, request: AgentRequest, reply_type: type[R], timeout: float = DEFAULT_TIMEOUT
+    ) -> R:
+        """Run a command in the target process and return its result, read as ``reply_type``.
 
-        Raises ``AgentError`` if the agent reports a failure, does not answer
-        within ``timeout`` seconds or is not connected (any more).
+        Raises ``AgentError`` if the agent reports a failure, answers something
+        else, does not answer within ``timeout`` seconds or is not connected (any more).
         """
+        method = str(request.command)
         if not self._alive:
             raise AgentError("agent is not connected")
         request_id = next(self._ids)
         pending = _PendingRequest()
         self._pending[request_id] = pending
-        data = JsonLines.encode({"id": request_id, "method": method, "params": params or {}})
+        data = JsonLines.encode(CommandCall(request_id, method, request.to_wire()).to_wire())
         try:
             with self._write_lock:
                 self._sock.sendall(data)
@@ -77,14 +82,17 @@ class AgentConnection:
         reply = pending.reply
         if reply is None:
             raise AgentError("agent disconnected")
-        if reply.has("error"):
-            raise AgentError(str(reply.get_raw("error")))
-        return reply.get_object("result")
+        if reply.error is not None:
+            raise AgentError(reply.error)
+        try:
+            return reply_type.from_wire(reply.result, "result")
+        except WireError as error:
+            raise AgentError(f"agent answered {method!r} with something else: {error}") from error
 
     def close(self) -> None:
         """Ask the agent to stop, then drop the connection."""
         try:
-            self.request(AgentCommand.SHUTDOWN, timeout=self._SHUTDOWN_TIMEOUT)
+            self.request(Shutdown(), Acknowledgement, self._SHUTDOWN_TIMEOUT)
         except AgentError:
             pass
         try:
@@ -111,14 +119,15 @@ class AgentConnection:
                 pending.done.set()  # reply stays None: "agent disconnected"
             self._listener.on_agent_close(self)
 
-    def _dispatch(self, message: WireReader) -> None:
-        if message.get_optional_str("type") == AgentMessageType.RESULT:
-            pending = self._pending.get(message.get_int("id", -1))
-            if pending is not None:
-                pending.reply = message
-                pending.done.set()
-            return
+    def _dispatch(self, raw: JsonObject) -> None:
         try:
-            self._listener.on_agent_message(self, message)
+            match read_one_of(raw, CommandResult, AgentMetrics):
+                case CommandResult() as reply:
+                    pending = self._pending.get(reply.id)
+                    if pending is not None:
+                        pending.reply = reply
+                        pending.done.set()
+                case AgentMetrics() as metrics:
+                    self._listener.on_agent_metrics(self, metrics)
         except Exception:  # a bad message must not kill the reader
             traceback.print_exc(file=sys.stderr)

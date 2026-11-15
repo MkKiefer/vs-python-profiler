@@ -1,25 +1,24 @@
 import unittest
 
 from _vscode_pyprof.agent_protocol.options import AgentOptions
-from _vscode_pyprof.wire import WireReader
 
 
 class TestAgentOptions(unittest.TestCase):
     def test_from_wire_with_empty_object_returns_defaults(self) -> None:
-        self.assertEqual(AgentOptions.from_wire(WireReader({})), AgentOptions())
+        self.assertEqual(AgentOptions.from_wire({}), AgentOptions())
 
     def test_from_wire_reads_camel_case_names(self) -> None:
-        raw = WireReader({"tracemalloc": True, "tracemallocFrames": 8, "asyncioDebug": True, "slowCallbackMs": 50})
+        raw = {"tracemalloc": True, "tracemallocFrames": 8, "asyncioDebug": True, "slowCallbackMs": 50}
 
         self.assertEqual(AgentOptions.from_wire(raw), AgentOptions(True, 8, True, 50.0))
 
     def test_from_wire_ignores_options_meant_for_the_collector(self) -> None:
-        raw = WireReader({"rateHz": 200, "native": True, "tracemalloc": True})
+        raw = {"rateHz": 200, "native": True, "tracemalloc": True}
 
         self.assertEqual(AgentOptions.from_wire(raw), AgentOptions(tracemalloc=True))
 
     def test_from_wire_with_zero_traceback_frames_uses_one(self) -> None:
-        self.assertEqual(AgentOptions.from_wire(WireReader({"tracemallocFrames": 0})).tracemalloc_frames, 1)
+        self.assertEqual(AgentOptions.from_wire({"tracemallocFrames": 0}).tracemalloc_frames, 1)
 
     def test_from_json_without_text_returns_defaults(self) -> None:
         self.assertEqual((AgentOptions.from_json(None), AgentOptions.from_json("")), (AgentOptions(), AgentOptions()))

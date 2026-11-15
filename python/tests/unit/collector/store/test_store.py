@@ -12,7 +12,7 @@ from _vscode_pyprof.collector.store.session_clock import SessionClock
 from _vscode_pyprof.collector.store.stack_table import SourceFrame, StackTable
 from _vscode_pyprof.collector.store.store import Store
 from _vscode_pyprof.collector.store.track import Track
-from _vscode_pyprof.wire import WireReader
+from tests.unit.json_view import JsonView
 
 ROOT = os.path.abspath(os.sep)
 INTERNAL_DIR = os.path.join(ROOT, "ext", "_vscode_pyprof")
@@ -34,7 +34,7 @@ class StoreTestCase(unittest.TestCase):
     def threads(*stacks: tuple[int, int, list[FrameInfo]]) -> list[InterpreterInfo]:
         return [InterpreterInfo((0, [ThreadInfo(stack) for stack in stacks]))]
 
-    def function_names(self, wire: WireReader, stack: int) -> list[str]:
+    def function_names(self, wire: JsonView, stack: int) -> list[str]:
         """Function names of a stack, root first."""
         frames = wire.get_list("frames")
         stacks = wire.get_list("stacks")
@@ -57,12 +57,12 @@ class TestStoreTracebacks(StoreTestCase):
             [SourceFrame("<string>", "<module>", 1), SourceFrame(LAUNCHER, "run", 9), SourceFrame(APP, "main", 1)]
         )
 
-        self.assertListEqual(self.function_names(WireReader(self.store.delta()), stack), ["main"])
+        self.assertListEqual(self.function_names(JsonView(self.store.delta()), stack), ["main"])
 
     def test_intern_traceback_without_strip_launcher_keeps_all_frames(self) -> None:
         stack = self.store.intern_traceback([SourceFrame("<string>", "<module>", 1), SourceFrame(APP, "main", 1)])
 
-        self.assertListEqual(self.function_names(WireReader(self.store.delta()), stack), ["<module>", "main"])
+        self.assertListEqual(self.function_names(JsonView(self.store.delta()), stack), ["<module>", "main"])
 
     def test_intern_traceback_with_only_launcher_frames_returns_no_stack(self) -> None:
         self.store.describe_session(CollectorOptions(strip_launcher=True), None)
@@ -79,7 +79,7 @@ class TestStoreSamples(StoreTestCase):
 
         self.store.add_thread_sample(12.3456, self.threads((101, 3, main_stack), (102, 0, worker_stack)))
 
-        samples = WireReader(self.store.delta()).get_object("samples")
+        samples = JsonView(self.store.delta()).get_object("samples")
         self.assertEqual(samples.get_list("t"), [12.346, 12.346])
         self.assertEqual(samples.get_list("tid"), [101, 102])
         self.assertEqual(samples.get_list("status"), [3, 0])
@@ -89,7 +89,7 @@ class TestStoreSamples(StoreTestCase):
             1.0, self.threads((1, 0, [self.frame(APP, "work", 5), self.frame(APP, "main", 1)]))
         )
 
-        delta = WireReader(self.store.delta())
+        delta = JsonView(self.store.delta())
         stack = delta.get_object("samples").get_list("stack")[0]
 
         assert isinstance(stack, int)
@@ -100,12 +100,12 @@ class TestStoreSamples(StoreTestCase):
 
         self.store.add_thread_sample(1.0, self.threads((1, 0, agent_stack)))
 
-        self.assertEqual(WireReader(self.store.delta()).get_object("samples").get_list("t"), [])
+        self.assertEqual(JsonView(self.store.delta()).get_object("samples").get_list("t"), [])
 
     def test_add_thread_sample_skips_threads_without_frames(self) -> None:
         self.store.add_thread_sample(1.0, self.threads((1, 0, [])))
 
-        self.assertEqual(WireReader(self.store.delta()).get_object("samples").get_list("t"), [])
+        self.assertEqual(JsonView(self.store.delta()).get_object("samples").get_list("t"), [])
 
     def test_add_thread_sample_with_strip_launcher_removes_bootstrap_frames(self) -> None:
         self.store.describe_session(CollectorOptions(strip_launcher=True), None)
@@ -113,7 +113,7 @@ class TestStoreSamples(StoreTestCase):
 
         self.store.add_thread_sample(1.0, self.threads((1, 0, stack)))
 
-        delta = WireReader(self.store.delta())
+        delta = JsonView(self.store.delta())
         stack_id = delta.get_object("samples").get_list("stack")[0]
         assert isinstance(stack_id, int)
         self.assertListEqual(self.function_names(delta, stack_id), ["main"])
@@ -129,7 +129,7 @@ class TestStoreSamples(StoreTestCase):
     def test_add_async_sample_records_rows_in_async_table(self) -> None:
         self.store.add_async_sample(4.0, [AsyncStack([self.frame(APP, "handler", 7)], thread_id=55, task_id=1)])
 
-        delta = WireReader(self.store.delta())
+        delta = JsonView(self.store.delta())
 
         self.assertEqual(delta.get_object("asyncSamples").get_list("tid"), [55])
         self.assertEqual(delta.get_object("samples").get_list("tid"), [])
@@ -157,7 +157,7 @@ class TestStoreTasks(StoreTestCase):
     def test_update_tasks_with_new_task_records_it_as_waiting(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1"), running_ids=set())
 
-        task = WireReader.of(WireReader(self.store.delta()).get_list("tasks")[0])
+        task = JsonView.of(JsonView(self.store.delta()).get_list("tasks")[0])
 
         self.assertEqual((task.get_int("id"), task.get_str("name"), task.get_str("state")), (7, "worker-1", "waiting"))
         self.assertTrue(self.store.has_tasks())
@@ -165,21 +165,21 @@ class TestStoreTasks(StoreTestCase):
     def test_update_tasks_with_running_task_records_running_state(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1"), running_ids={7})
 
-        task = WireReader.of(WireReader(self.store.delta()).get_list("tasks")[0])
+        task = JsonView.of(JsonView(self.store.delta()).get_list("tasks")[0])
 
         self.assertEqual(task.get_str("state"), "running")
 
     def test_update_tasks_with_awaiter_id_records_parent(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1", awaiter=3), running_ids=set())
 
-        task = WireReader.of(WireReader(self.store.delta()).get_list("tasks")[0])
+        task = JsonView.of(JsonView(self.store.delta()).get_list("tasks")[0])
 
         self.assertEqual(task.get_int("parent"), 3)
 
     def test_update_tasks_with_awaiter_name_records_no_parent(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1", awaiter="Task-1"), running_ids=set())
 
-        task = WireReader.of(WireReader(self.store.delta()).get_list("tasks")[0])
+        task = JsonView.of(JsonView(self.store.delta()).get_list("tasks")[0])
 
         self.assertFalse(task.has("parent"))
 
@@ -188,8 +188,8 @@ class TestStoreTasks(StoreTestCase):
 
         self.store.update_tasks(25.0, [], running_ids=set())
 
-        delta = WireReader(self.store.delta())
-        task = WireReader.of(delta.get_list("tasks")[0])
+        delta = JsonView(self.store.delta())
+        task = JsonView.of(delta.get_list("tasks")[0])
         self.assertEqual((task.get_str("state"), task.get_float("end")), ("done", 25.0))
         self.assertEqual(delta.get_list("taskEvents"), [[10.0, 7, "waiting"], [25.0, 7, "done"]])
 
@@ -199,38 +199,38 @@ class TestStoreTasks(StoreTestCase):
 
         self.store.update_tasks(11.0, self.awaited(7, "worker-1"), running_ids=set())
 
-        self.assertEqual(WireReader(self.store.delta()).get_list("tasks"), [])
+        self.assertEqual(JsonView(self.store.delta()).get_list("tasks"), [])
 
 
 class TestStoreSeriesAndEvents(StoreTestCase):
     def test_add_track_appends_rounded_point(self) -> None:
         self.store.add_track(Track.RSS, 10.004, 2048)
 
-        tracks = WireReader(self.store.delta()).get_object("tracks")
+        tracks = JsonView(self.store.delta()).get_object("tracks")
 
         self.assertEqual(tracks.get_list("rss"), [[10.0, 2048]])
 
     def test_add_gc_appends_collection(self) -> None:
         self.store.add_gc(5.0, 1.25, 2, 40, 9000)
 
-        self.assertEqual(WireReader(self.store.delta()).get_list("gc"), [[5.0, 1.25, 2, 40, 9000]])
+        self.assertEqual(JsonView(self.store.delta()).get_list("gc"), [[5.0, 1.25, 2, 40, 9000]])
 
     def test_add_marker_with_explicit_time_uses_it(self) -> None:
         self.store.add_marker("deploy", 42.0)
 
-        self.assertEqual(WireReader(self.store.delta()).get_list("markers"), [[42.0, "deploy"]])
+        self.assertEqual(JsonView(self.store.delta()).get_list("markers"), [[42.0, "deploy"]])
 
     def test_add_event_merges_details(self) -> None:
         self.store.add_event("slow-callback", "took 0.2s", 7.0, EventDetails(seconds=0.2))
 
-        events = WireReader(self.store.delta()).get_list("events")
+        events = JsonView(self.store.delta()).get_list("events")
 
         self.assertEqual(events, [{"seconds": 0.2, "t": 7.0, "kind": "slow-callback", "message": "took 0.2s"}])
 
     def test_set_thread_name_reports_thread_in_next_delta(self) -> None:
         self.store.set_thread_name(101, "MainThread")
 
-        self.assertEqual(WireReader(self.store.delta()).get_raw("threads"), {"101": "MainThread"})
+        self.assertEqual(JsonView(self.store.delta()).get_raw("threads"), {"101": "MainThread"})
 
     def test_set_thread_name_with_unchanged_name_is_not_reported_again(self) -> None:
         self.store.set_thread_name(101, "MainThread")
@@ -238,14 +238,12 @@ class TestStoreSeriesAndEvents(StoreTestCase):
 
         self.store.set_thread_name(101, "MainThread")
 
-        self.assertEqual(WireReader(self.store.delta()).get_raw("threads"), {})
+        self.assertEqual(JsonView(self.store.delta()).get_raw("threads"), {})
 
     def test_add_object_counts_reports_latest_counts(self) -> None:
         self.store.add_object_counts(ObjectCounts(3.0, [TypeCount("dict", 10)]))
 
-        self.assertEqual(
-            WireReader(self.store.delta()).get_list("objectCounts"), [{"t": 3.0, "counts": [["dict", 10]]}]
-        )
+        self.assertEqual(JsonView(self.store.delta()).get_list("objectCounts"), [{"t": 3.0, "counts": [["dict", 10]]}])
 
 
 class TestStoreDeltas(StoreTestCase):
@@ -271,15 +269,15 @@ class TestStoreDeltas(StoreTestCase):
 
         self.store.add_track(Track.RSS, 2.0, 200)
 
-        delta = WireReader(self.store.delta())
+        delta = JsonView(self.store.delta())
         self.assertEqual(delta.get_object("tracks").get_list("rss"), [[2.0, 200]])
         self.assertEqual(delta.get_list("frames"), [])
 
     def test_delta_includes_meta_only_when_changed(self) -> None:
-        first = WireReader(self.store.delta())
-        second = WireReader(self.store.delta())
+        first = JsonView(self.store.delta())
+        second = JsonView(self.store.delta())
         self.store.set_target(99)
-        third = WireReader(self.store.delta())
+        third = JsonView(self.store.delta())
 
         self.assertTrue(first.has("meta"))
         self.assertFalse(second.has("meta"))
@@ -288,8 +286,8 @@ class TestStoreDeltas(StoreTestCase):
     def test_delta_reports_new_snapshot_once(self) -> None:
         self.store.add_snapshot(self.snapshot())
 
-        first = WireReader(self.store.delta())
-        second = WireReader(self.store.delta())
+        first = JsonView(self.store.delta())
+        second = JsonView(self.store.delta())
 
         self.assertEqual(len(first.get_list("snapshots")), 1)
         self.assertEqual(second.get_list("snapshots"), [])
@@ -300,21 +298,21 @@ class TestStoreDeltas(StoreTestCase):
         self.store.add_snapshot(self.snapshot())
         self.store.delta()
 
-        full = WireReader(self.store.full())
+        full = JsonView(self.store.full())
 
         self.assertEqual(full.get_object("tracks").get_list("rss"), [[1.0, 100]])
         self.assertEqual(full.get_raw("threads"), {"1": "MainThread"})
         self.assertEqual(len(full.get_list("snapshots")), 1)
 
     def test_full_is_tagged_as_pyprof_file(self) -> None:
-        full = WireReader(self.store.full())
+        full = JsonView(self.store.full())
 
         self.assertEqual((full.get_str("format"), full.get_int("version")), (Store.FORMAT, Store.FORMAT_VERSION))
 
 
 class TestStoreSessionFacts(StoreTestCase):
-    def meta(self) -> WireReader:
-        return WireReader(self.store.full()).get_object("meta")
+    def meta(self) -> JsonView:
+        return JsonView(self.store.full()).get_object("meta")
 
     def test_meta_of_new_store_describes_interpreter_only(self) -> None:
         meta = self.meta()
@@ -339,9 +337,9 @@ class TestStoreSessionFacts(StoreTestCase):
 
         meta = self.meta()
 
-        self.assertTrue(meta.get_bool("agent", False))
+        self.assertTrue(meta.get_bool("agent"))
         self.assertEqual(
-            (meta.get_str("executable"), meta.get_str_list("argv"), meta.get_str("cwd")),
+            (meta.get_str("executable"), meta.get_list("argv"), meta.get_str("cwd")),
             ("/usr/bin/python3.15", ["app.py"], "/work"),
         )
 

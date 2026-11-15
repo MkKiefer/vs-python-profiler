@@ -29,15 +29,26 @@ from collections import deque
 from collections.abc import Callable
 
 from _vscode_pyprof.agent_protocol.address import AgentAddress
+from _vscode_pyprof.agent_protocol.commands import (
+    AgentRequest,
+    CommandCall,
+    CommandResult,
+    CountObjects,
+    Ping,
+    SetAsyncioDebug,
+    Shutdown,
+    StartTracing,
+    StopTracing,
+    TakeSnapshot,
+)
 from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
 from _vscode_pyprof.agent_protocol.metrics import AgentEvent, AgentMetrics
-from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType
 from _vscode_pyprof.agent_protocol.options import AgentOptions
 from _vscode_pyprof.agent_protocol.replies import Acknowledgement, AsyncioDebugStatus, Pong
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
 from _vscode_pyprof.target.loop_monitor import LoopMonitor
 from _vscode_pyprof.target.memory_probe import MemoryProbe
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireMessage, WireReader
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireMessage
 
 
 class Agent(threading.Thread):
@@ -47,9 +58,6 @@ class Agent(threading.Thread):
     _PROBE_INTERVAL = 0.1
     _CONNECT_TIMEOUT = 10.0
     _RECEIVE_SIZE = 65536
-    _DEFAULT_TRACEBACK_FRAMES = AgentOptions().tracemalloc_frames
-    _DEFAULT_SNAPSHOT_LIMIT = 3000
-    _DEFAULT_OBJECT_COUNT_LIMIT = 60
 
     def __init__(
         self,
@@ -69,15 +77,14 @@ class Agent(threading.Thread):
         self._socket: socket.socket | None = None
         self._write_lock = threading.Lock()
         self._halt = threading.Event()
-        self._commands: dict[str, Callable[[WireReader], WireMessage]] = {
-            AgentCommand.TRACEMALLOC_START: self._start_tracing,
-            AgentCommand.TRACEMALLOC_STOP: self._stop_tracing,
-            AgentCommand.SNAPSHOT: self._snapshot,
-            AgentCommand.OBJECT_COUNTS: self._object_counts,
-            AgentCommand.ASYNCIO_DEBUG: self._set_asyncio_debug,
-            AgentCommand.PING: self._ping,
-            AgentCommand.SHUTDOWN: self._shutdown,
-        }
+        self._commands: dict[str, Callable[[JsonObject], WireMessage]] = {}
+        self._register(StartTracing, self._start_tracing)
+        self._register(StopTracing, self._stop_tracing)
+        self._register(TakeSnapshot, self._snapshot)
+        self._register(CountObjects, self._object_counts)
+        self._register(SetAsyncioDebug, self._set_asyncio_debug)
+        self._register(Ping, self._ping)
+        self._register(Shutdown, self._shutdown)
 
     @property
     def connected(self) -> bool:
@@ -111,7 +118,7 @@ class Agent(threading.Thread):
             version=sys.version.split()[0],
             threads=self._thread_names(),
         )
-        self._send(hello.to_wire())
+        self._send(hello)
 
     def _apply_start_options(self) -> None:
         if self._options.tracemalloc:
@@ -137,20 +144,23 @@ class Agent(threading.Thread):
                 last_metrics = now
                 self._send_metrics(now)
 
-    def _dispatch(self, request: WireReader) -> None:
-        method = request.get_optional_str("method") or ""
-        reply: JsonObject = {"type": AgentMessageType.RESULT, "id": request.get_raw("id")}
+    def _register[R: AgentRequest](self, request_type: type[R], handler: Callable[[R], WireMessage]) -> None:
+        self._commands[request_type.command] = lambda params: handler(request_type.from_wire(params, "params"))
+
+    def _dispatch(self, raw: JsonObject) -> None:
+        """Run one command. Raises ``WireError`` for a message that is not a command (the collector is broken)."""
+        call = CommandCall.from_wire(raw)
         try:
-            command = self._commands.get(method)
+            command = self._commands.get(call.method)
             if command is None:
-                raise ValueError(f"unknown agent command {method!r}")
-            reply["result"] = command(request.get_object("params")).to_wire()
+                raise ValueError(f"unknown agent command {call.method!r}")
+            reply = CommandResult(call.id, result=command(call.params).to_wire())
         except Exception as error:  # report every failure to the collector instead of dying
-            reply["error"] = f"{type(error).__name__}: {error}"
+            reply = CommandResult(call.id, error=f"{type(error).__name__}: {error}")
         self._send(reply)
 
-    def _send(self, message: JsonObject) -> None:
-        data = JsonLines.encode(message, fallback=repr)
+    def _send(self, message: WireMessage) -> None:
+        data = JsonLines.encode(message.to_wire(), fallback=repr)
         with self._write_lock:
             if self._socket is None:
                 return
@@ -169,7 +179,7 @@ class Agent(threading.Thread):
             loops=self._loops.take_metrics(now),
             events=events,
         )
-        self._send(metrics.to_wire())
+        self._send(metrics)
 
     def _thread_names(self) -> list[ThreadName]:
         """Every thread of the program except the agent's own."""
@@ -192,27 +202,26 @@ class Agent(threading.Thread):
                 pass
 
     # ---- commands: one per ``AgentCommand``, each returns the result sent back to the collector
-    def _start_tracing(self, params: WireReader) -> WireMessage:
-        return self._memory.start_tracing(params.get_int("frames", self._DEFAULT_TRACEBACK_FRAMES))
+    def _start_tracing(self, request: StartTracing) -> WireMessage:
+        return self._memory.start_tracing(request.frames)
 
-    def _stop_tracing(self, _params: WireReader) -> WireMessage:
+    def _stop_tracing(self, _request: StopTracing) -> WireMessage:
         return self._memory.stop_tracing()
 
-    def _snapshot(self, params: WireReader) -> WireMessage:
-        return self._memory.snapshot(params.get_int("limit", self._DEFAULT_SNAPSHOT_LIMIT))
+    def _snapshot(self, request: TakeSnapshot) -> WireMessage:
+        return self._memory.snapshot(request.limit)
 
-    def _object_counts(self, params: WireReader) -> WireMessage:
-        return self._memory.object_counts(params.get_int("limit", self._DEFAULT_OBJECT_COUNT_LIMIT))
+    def _object_counts(self, request: CountObjects) -> WireMessage:
+        return self._memory.object_counts(request.limit)
 
-    def _set_asyncio_debug(self, params: WireReader) -> WireMessage:
-        slow_callback_ms = params.get_float("slowMs") if params.has("slowMs") else None
-        self._loops.set_debug(params.get_bool("enabled", True), slow_callback_ms)
+    def _set_asyncio_debug(self, request: SetAsyncioDebug) -> WireMessage:
+        self._loops.set_debug(request.enabled, request.slow_ms)
         return AsyncioDebugStatus(self._loops.debug, self._loops.loop_count)
 
-    def _ping(self, _params: WireReader) -> WireMessage:
+    def _ping(self, _request: Ping) -> WireMessage:
         return Pong(time.perf_counter(), os.getpid())
 
-    def _shutdown(self, _params: WireReader) -> WireMessage:
+    def _shutdown(self, _request: Shutdown) -> WireMessage:
         self._halt.set()
         return Acknowledgement()
 

@@ -5,10 +5,12 @@ import socket
 import threading
 import unittest
 
+from _vscode_pyprof.agent_protocol.commands import CommandCall
+from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
 from _vscode_pyprof.collector.agent.connection import AgentConnection
 from _vscode_pyprof.collector.agent.listener import AgentListener
 from _vscode_pyprof.collector.agent.server import AgentServer
-from _vscode_pyprof.wire import JsonObject, WireReader
+from _vscode_pyprof.wire import JsonObject
 
 
 class RecordingListener(AgentListener):
@@ -17,14 +19,14 @@ class RecordingListener(AgentListener):
         self.closed = threading.Event()
         self.message_received = threading.Event()
         self.connection: AgentConnection | None = None
-        self.messages: list[WireReader] = []
+        self.metrics: list[AgentMetrics] = []
 
     def on_agent_hello(self, connection: AgentConnection) -> None:
         self.connection = connection
         self.connected.set()
 
-    def on_agent_message(self, connection: AgentConnection, message: WireReader) -> None:
-        self.messages.append(message)
+    def on_agent_metrics(self, connection: AgentConnection, metrics: AgentMetrics) -> None:
+        self.metrics.append(metrics)
         self.message_received.set()
 
     def on_agent_close(self, connection: AgentConnection) -> None:
@@ -43,10 +45,19 @@ class FakeAgent:
         self._socket.sendall((json.dumps(message) + "\n").encode())
 
     def hello(self, token: str | None = None) -> None:
-        self.send({"type": "hello", "token": token or self.token, "pid": 4242, "argv": ["app.py"], "cwd": "/work"})
+        self.send(
+            {
+                "type": "hello",
+                "token": token or self.token,
+                "pid": 4242,
+                "argv": ["app.py"],
+                "cwd": "/work",
+                "threads": [],
+            }
+        )
 
-    def read(self) -> WireReader:
-        return WireReader.of(json.loads(self._reader.readline()))
+    def read(self) -> CommandCall:
+        return CommandCall.from_wire(json.loads(self._reader.readline()))
 
     def read_is_end_of_stream(self) -> bool:
         return self._reader.readline() == b""

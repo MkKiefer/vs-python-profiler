@@ -1,5 +1,6 @@
 import unittest
 
+from _vscode_pyprof.agent_protocol.metrics import TracedMemory
 from tests.unit.collector.agent.agent_link_harness import AgentLinkTestCase
 
 
@@ -26,10 +27,16 @@ class TestAgentServer(AgentLinkTestCase):
     def test_unsolicited_message_is_forwarded_to_listener(self) -> None:
         self.connect()
 
-        self.agent.send({"type": "metrics", "traced": 100})
+        self.agent.send({"type": "metrics", "threads": [], "traced": {"current": 100, "peak": 150}})
 
         self.assertTrue(self.listener.message_received.wait(5))
-        self.assertEqual(self.listener.messages[0].get_int("traced"), 100)
+        self.assertEqual(self.listener.metrics[0].traced, TracedMemory(100, 150))
+
+    def test_first_message_that_is_not_a_hello_closes_connection(self) -> None:
+        self.agent.send({"type": "metrics", "threads": []})
+
+        self.assertTrue(self.agent.read_is_end_of_stream())
+        self.assertFalse(self.listener.connected.is_set())
 
 
 if __name__ == "__main__":
