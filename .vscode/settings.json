@@ -1,0 +1,8 @@
+{
+    // The mypy extension's bundled LSP server (pygls/cattrs/typing_extensions) can't import on
+    // Python 3.15 (typing.no_type_check_decorator was removed). Run the server on the system 3.12,
+    // but run mypy itself from the project's 3.15 venv so checks match `pdm run typecheck`.
+    "mypy-type-checker.interpreter": ["/usr/bin/python3.12"],
+    "mypy-type-checker.path": ["${workspaceFolder}/python/.venv/bin/mypy"],
+    "mypy-type-checker.cwd": "${workspaceFolder}/python"
+}
