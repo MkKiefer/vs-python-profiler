@@ -35,6 +35,17 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
+/** Share of discarded sampling attempts from which the dashboard suggests blocking sampling. */
+export const TORN_SAMPLES_HINT = 0.15;
+
+/** Share of CPU time in asyncio debug mode's traceback capture from which the dashboard points it out. */
+export const ASYNCIO_DEBUG_HINT = 0.05;
+
+/** `asyncio.format_helpers.extract_stack`: what debug mode runs for every new Handle, Future and Task. */
+export function isAsyncioTracebackCapture(file: string, func: string): boolean {
+  return func === 'extract_stack' && file.replaceAll('\\', '/').endsWith('/asyncio/format_helpers.py');
+}
+
 /** Share of steps in `values` that do not go down. */
 export function monotonicShare(values: readonly number[]): number {
   let up = 0;
@@ -45,13 +56,24 @@ export function monotonicShare(values: readonly number[]): number {
 export function computeInsights({ model: m, capabilities, state, counts, total }: InsightInput): Insight[] {
   const out: Insight[] = [];
 
-  const top = m.topFunctions(counts).find((f) => m.fns[f.fn].cat === Cat.User);
+  const functions = m.topFunctions(counts);
+  const top = functions.find((f) => m.fns[f.fn].cat === Cat.User);
   if (top && total > 200 && top.self / total > 0.25) {
     out.push({
       id: 'hot-function',
       severity: 'warn',
       text: `${m.fns[top.fn].func} uses ${fmtPct(top.self, total)} of CPU time in its own code (not in functions it calls).`,
       action: { label: 'Show callers & callees', target: { kind: 'focus', fn: top.fn } },
+    });
+  }
+
+  const debugCapture = functions.find((f) => isAsyncioTracebackCapture(m.fns[f.fn].file, m.fns[f.fn].func));
+  if (debugCapture && total > 200 && debugCapture.total / total >= ASYNCIO_DEBUG_HINT) {
+    out.push({
+      id: 'asyncio-debug-overhead',
+      severity: 'warn',
+      text: `asyncio debug mode records a traceback for every task and callback: ${fmtPct(debugCapture.total, total)} of CPU time went there. Turn it off when you measure CPU time.`,
+      action: { label: 'Show callers & callees', target: { kind: 'focus', fn: debugCapture.fn } },
     });
   }
 
@@ -122,11 +144,14 @@ export function computeInsights({ model: m, capabilities, state, counts, total }
     });
   }
 
-  if (m.stats.samples > 100 && m.stats.errors / m.stats.samples > 0.2) {
+  // the share of sampling attempts, as on the overview's Samples tile; Tachyon itself discards
+  // about 10 % on busy multi-threaded programs, so only clearly more than that is worth a hint
+  const attempts = m.stats.samples + m.stats.errors;
+  if (m.stats.samples > 100 && m.stats.errors / attempts >= TORN_SAMPLES_HINT) {
     out.push({
       id: 'torn-samples',
       severity: 'warn',
-      text: `${fmtPct(m.stats.errors, m.stats.samples)} of samples were discarded because stacks changed while being read. Enable "vspyprof.blockingSampling" for consistent samples.`,
+      text: `${fmtPct(m.stats.errors, attempts)} of samples were discarded because stacks changed while being read. Enable "vspyprof.blockingSampling" for consistent samples.`,
     });
   }
 

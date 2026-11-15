@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ProfileModel } from '../../src/shared/model';
 import type { FromWebview } from '../../src/shared/protocol';
-import { computeInsights, monotonicShare } from '../../src/webview/domain/insights';
+import { computeInsights, isAsyncioTracebackCapture, monotonicShare } from '../../src/webview/domain/insights';
 import { RouteName } from '../../src/webview/router/routeNames';
 import { parsePersistedState, type HostEvent, type PersistedState } from '../../src/webview/services/hostClient';
 import { MockHostClient } from '../../src/webview/services/mockHostClient';
@@ -129,6 +129,33 @@ describe('insights', () => {
       if (target.kind === 'route') expect(Object.values(RouteName)).toContain(target.route);
       else expect(target.fn).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it('test_torn_samples_hint_uses_the_share_of_attempts', () => {
+    const model = new ProfileModel();
+    model.applyDelta(loadDelta('cpu'));
+    const tornSamplesInsight = (samples: number, errors: number) => {
+      model.stats.samples = samples;
+      model.stats.errors = errors;
+      const counts = model.countStacks({ source: 'threads', mode: 'cpu' });
+      return computeInsights({
+        model,
+        capabilities: { agent: false, tracemalloc: false, asyncioDebug: false, live: false },
+        state: 'file',
+        counts,
+        total: model.totalWeight(counts),
+      }).find((i) => i.id === 'torn-samples');
+    };
+
+    expect(tornSamplesInsight(850, 150)?.text).toMatch(/^15(\.0)?% of samples were discarded/);
+    expect(tornSamplesInsight(900, 100)).toBeUndefined();
+  });
+
+  it('test_asyncio_traceback_capture_matches_only_format_helpers_extract_stack', () => {
+    expect(isAsyncioTracebackCapture('/usr/lib/python3.15/asyncio/format_helpers.py', 'extract_stack')).toBe(true);
+    expect(isAsyncioTracebackCapture('C:\\Python315\\Lib\\asyncio\\format_helpers.py', 'extract_stack')).toBe(true);
+    expect(isAsyncioTracebackCapture('/usr/lib/python3.15/traceback.py', 'extract_stack')).toBe(false);
+    expect(isAsyncioTracebackCapture('/usr/lib/python3.15/asyncio/format_helpers.py', '_format_callback')).toBe(false);
   });
 
   it('test_live_session_without_agent_says_so', () => {
