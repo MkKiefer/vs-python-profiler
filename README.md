@@ -76,14 +76,34 @@ axis. Drag across any track to narrow every tab, and the editor heat map, to tha
 
 ![The timeline tab: thread lanes with GIL waits and GC pauses above sample, CPU and memory charts](media/screenshots/timeline.png)
 
+## Overhead
+
+CPU sampling reads your program from outside, so it barely changes it. tracemalloc and asyncio
+debug mode run *inside* it: turn them on to find a leak or a blocking call, and leave them off when
+you measure CPU time. The dashboard says so when asyncio debug mode shows up in the profile.
+
+Measured on Linux with Python 3.15.2, on a JSON/regex/Decimal workload with one and with four
+threads (median of five runs, 1 kHz sampling):
+
+| Mode | Slowdown |
+|---|---|
+| CPU sampling (default) | under 1 % |
+| `blockingSampling` | 15–25 % |
+| tracemalloc, 1 frame per allocation | about 6× |
+| tracemalloc, 8–16 frames (default 16) | about 23× |
+| asyncio debug mode | depends on how many tasks and callbacks the program creates; 30 % of CPU time in a task-heavy demo |
+
+tracemalloc costs as much without the profiler (`python -X tracemalloc=16`); it is CPython's
+allocation tracer, not the profiler, that slows allocation-heavy code down.
+
 ## Settings
 
 | Setting | Default | What it does |
 |---|---|---|
-| `vspyprof.samplingRate` | `1000` | Stack samples per second. Tachyon handles 1–10 kHz. |
-| `vspyprof.blockingSampling` | `false` | Pause the target's threads for each sample. Removes discarded samples on busy multi-threaded programs, at the cost of more overhead. |
+| `vspyprof.samplingRate` | `1000` | Stack samples per second. |
+| `vspyprof.blockingSampling` | `false` | Pause the target's threads for each sample. Removes discarded samples on busy multi-threaded programs, but slows the program by 15–25 %. |
 | `vspyprof.nativeFrames` | `false` | Show `<native>` frames for time spent in C code. |
-| `vspyprof.memory.tracemallocOnStart` | `false` | Start tracemalloc with the session (adds roughly 30–100 % CPU and memory overhead to the target). |
+| `vspyprof.memory.tracemallocOnStart` | `false` | Start tracemalloc with the session. Slows allocation-heavy code several times over (see [Overhead](#overhead)). |
 | `vspyprof.memory.tracebackFrames` | `16` | Frames recorded per allocation. |
 | `vspyprof.asyncio.debugOnStart` | `false` | Turn on asyncio debug mode with the session. |
 | `vspyprof.asyncio.slowCallbackMs` | `100` | Callbacks that block the event loop longer than this are reported. |
@@ -100,10 +120,9 @@ axis. Drag across any track to narrow every tab, and the editor heat map, to tha
 - **Discarded samples.** On a busy multi-threaded program, some samples catch a thread mid-update
   and are discarded; the overview shows how many. Turn on `vspyprof.blockingSampling` if the share
   is high and you need every sample.
-- **Measurement changes the program.** tracemalloc and asyncio debug mode run *inside* your program
-  and slow it down; asyncio debug mode records a traceback for every task and callback it creates,
-  which shows up in the flame graph. Turn them on to find a leak or a blocking call, and leave them
-  off when you measure CPU time. CPU sampling itself reads the program from outside.
+- **Snapshots pause the program.** Taking a tracemalloc snapshot or counting objects stops your
+  program for as long as it takes (about a second for a heap of 20 MB), which shows as a dip in
+  CPU and as threads waiting for the GIL at that moment. Event-loop lag leaves the pause out.
 - **Restricted Mode.** Profiling runs Python from the workspace, so it needs a
   [trusted workspace](https://code.visualstudio.com/docs/editor/workspace-trust). Saved profiles open
   in Restricted Mode too.

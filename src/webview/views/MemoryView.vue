@@ -121,7 +121,7 @@ const objectColumns: Column<ObjectRow>[] = [
       <UiBanner v-else>
         <UiButton
           :primary="!session.capabilities.tracemalloc"
-          :title="session.capabilities.tracemalloc ? undefined : 'tracemalloc adds CPU and memory overhead to the target'"
+          :title="session.capabilities.tracemalloc ? undefined : 'tracemalloc slows allocation-heavy code several times over; turn it on while you hunt a leak'"
           :disabled="session.isRunning('tracemalloc')"
           @click="session.run('tracemalloc', { enabled: !session.capabilities.tracemalloc })"
         >

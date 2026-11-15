@@ -110,7 +110,7 @@ function showAsyncFlame(): void {
           {{
             session.capabilities.asyncioDebug
               ? 'Debug mode is on: slow callbacks, never-awaited coroutines and destroyed pending tasks are reported below.'
-              : 'Turn on asyncio debug mode to catch slow callbacks and coroutines that were never awaited (small overhead).'
+              : 'Turn on asyncio debug mode to catch slow callbacks and coroutines that were never awaited. It records a traceback for every task and callback, which slows task-heavy code.'
           }}
         </span>
       </template>
