@@ -184,7 +184,7 @@ class TestStoreTasks(StoreTestCase):
 
         task = JsonView.of(JsonView(self.store.delta()).get_list("tasks")[0])
 
-        self.assertEqual((task.get_int("id"), task.get_str("name"), task.get_str("state")), (7, "worker-1", "waiting"))
+        self.assertEqual((task.get_int("id"), task.get_str("name"), task.get_str("state")), (1, "worker-1", "waiting"))
         self.assertTrue(self.store.has_tasks())
 
     def test_update_tasks_with_running_task_records_running_state(self) -> None:
@@ -194,12 +194,21 @@ class TestStoreTasks(StoreTestCase):
 
         self.assertEqual(task.get_str("state"), "running")
 
-    def test_update_tasks_with_awaiter_id_records_parent(self) -> None:
+    def test_update_tasks_with_awaiter_address_records_awaiting_task_as_parent(self) -> None:
+        awaited = self.awaited(3, "main") + self.awaited(7, "worker-1", awaiter=3)
+
+        self.store.update_tasks(10.0, awaited, running_ids=set())
+
+        rows = JsonView(self.store.delta()).get_list("tasks")
+        tasks = {task.get_str("name"): task for task in map(JsonView.of, rows)}
+        self.assertEqual(tasks["worker-1"].get_int("parent"), tasks["main"].get_int("id"))
+
+    def test_update_tasks_with_unknown_awaiter_address_records_no_parent(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1", awaiter=3), running_ids=set())
 
         task = JsonView.of(JsonView(self.store.delta()).get_list("tasks")[0])
 
-        self.assertEqual(task.get_int("parent"), 3)
+        self.assertFalse(task.has("parent"))
 
     def test_update_tasks_with_awaiter_name_records_no_parent(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1", awaiter="Task-1"), running_ids=set())
@@ -216,7 +225,7 @@ class TestStoreTasks(StoreTestCase):
         delta = JsonView(self.store.delta())
         task = JsonView.of(delta.get_list("tasks")[0])
         self.assertEqual((task.get_str("state"), task.get_float("end")), ("done", 25.0))
-        self.assertEqual(delta.get_list("taskEvents"), [[10.0, 7, "waiting"], [25.0, 7, "done"]])
+        self.assertEqual(delta.get_list("taskEvents"), [[10.0, 1, "waiting"], [25.0, 1, "done"]])
 
     def test_update_tasks_without_changes_reports_no_dirty_tasks(self) -> None:
         self.store.update_tasks(10.0, self.awaited(7, "worker-1"), running_ids=set())

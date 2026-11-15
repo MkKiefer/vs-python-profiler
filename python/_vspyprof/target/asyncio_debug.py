@@ -52,9 +52,33 @@ class AsyncioDebugCapture:
                 try:
                     on_log_record(record)
                 except Exception:  # never let profiling break the program's logging
-                    return
+                    pass
+
+            def handle(self, record: logging.LogRecord) -> bool:
+                handled = super().handle(record)
+                AsyncioDebugCapture._show_like_without_us(self, record)
+                return handled
 
         return Handler(level=logging.WARNING)
+
+    @staticmethod
+    def _show_like_without_us(ours: logging.Handler, record: logging.LogRecord) -> None:
+        """Print ``record`` the way logging would if our handler were not installed.
+
+        A logger without any handler prints records of WARNING and above to stderr
+        (``logging.lastResort``). Our handler counts as one, so when it is the only
+        handler the record reaches, logging stays silent; we print it instead.
+        """
+        logger: logging.Logger | None = logging.getLogger(record.name)
+        while logger is not None:
+            if any(handler is not ours for handler in logger.handlers):
+                return
+            if not logger.propagate:
+                break
+            logger = logger.parent
+        last_resort = logging.lastResort
+        if last_resort is not None and record.levelno >= last_resort.level:
+            last_resort.handle(record)
 
     def _showwarning(
         self,

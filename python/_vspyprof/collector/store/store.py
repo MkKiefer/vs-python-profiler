@@ -179,13 +179,13 @@ class Store:
         for info in awaited_infos:
             for task in info.awaited_by:
                 frames = [frame for coroutine in task.coroutine_stack for frame in coroutine.call_stack]
-                # awaited_by names the awaiting task by id (int) when it is known
+                # awaited_by names the awaiting task by address (int) when it is known
                 awaiter = task.awaited_by[0].task_name if task.awaited_by else None
                 observations.append(
                     TaskObservation(
-                        task_id=task.task_id,
+                        address=task.task_id,
                         name=task.task_name or f"Task-{task.task_id}",
-                        parent=awaiter if isinstance(awaiter, int) else None,
+                        parent_address=awaiter if isinstance(awaiter, int) else None,
                         thread=info.thread_id,
                         stack=self._stacks.intern_sampled(frames, strip=False).stack_id,
                         state=TaskState.RUNNING if task.task_id in running_ids else TaskState.WAITING,

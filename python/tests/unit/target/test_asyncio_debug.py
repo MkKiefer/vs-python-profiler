@@ -8,6 +8,17 @@ from _vspyprof.agent_protocol.names import EventKind
 from _vspyprof.target.asyncio_debug import AsyncioDebugCapture
 
 
+class RecordingHandler(logging.Handler):
+    """Stands in for ``logging.lastResort``, which prints to stderr."""
+
+    def __init__(self, level: int) -> None:
+        super().__init__(level)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
 class TestAsyncioDebugCapture(unittest.TestCase):
     def setUp(self) -> None:
         self.events: list[AgentEvent] = []
@@ -19,6 +30,9 @@ class TestAsyncioDebugCapture(unittest.TestCase):
         self.original_showwarning = warnings.showwarning
         self.addCleanup(setattr, warnings, "showwarning", self.original_showwarning)
         self.addCleanup(self.capture.remove)
+        self.last_resort = RecordingHandler(logging.WARNING)
+        self.addCleanup(setattr, logging, "lastResort", logging.lastResort)
+        logging.lastResort = self.last_resort
 
     def last_event(self) -> AgentEvent:
         return self.events[-1]
@@ -95,6 +109,32 @@ class TestAsyncioDebugCapture(unittest.TestCase):
 
         self.assertEqual(self.events, [])
         self.assertEqual(self.shown, ["something is deprecated"])
+
+    def test_install_without_other_handlers_still_prints_record_like_logging_does(self) -> None:
+        self.capture.install()
+
+        self.logger.error("Task exception was never retrieved")
+
+        self.assertEqual(self.last_resort.messages, ["Task exception was never retrieved"])
+        self.assertEqual(self.last_event().kind, EventKind.EXCEPTION_NEVER_RETRIEVED)
+
+    def test_install_with_program_handler_leaves_printing_to_it(self) -> None:
+        program_handler = RecordingHandler(logging.NOTSET)
+        self.logger.addHandler(program_handler)
+        self.addCleanup(self.logger.removeHandler, program_handler)
+        self.capture.install()
+
+        self.logger.warning("socket.send() raised exception.")
+
+        self.assertEqual(program_handler.messages, ["socket.send() raised exception."])
+        self.assertEqual(self.last_resort.messages, [])
+
+    def test_install_does_not_print_records_below_last_resort_level(self) -> None:
+        self.capture.install()
+
+        self.logger.info("poll took 1.0 ms")
+
+        self.assertEqual(self.last_resort.messages, [])
 
     def test_remove_restores_logger_and_showwarning(self) -> None:
         handlers_before = list(self.logger.handlers)
