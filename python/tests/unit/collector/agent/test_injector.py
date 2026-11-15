@@ -50,6 +50,15 @@ class TestAgentInjector(unittest.TestCase):
 
         self.assertFalse(os.path.exists(self.scripts[0]))
 
+    def test_cleanup_after_two_injections_deletes_both_scripts(self) -> None:
+        with mock.patch.object(sys, "remote_exec", side_effect=self.record_script):
+            self.injector.inject(4242, "127.0.0.1:5123:abc", _OPTIONS)
+            self.injector.inject(4243, "127.0.0.1:5123:abc", _OPTIONS)
+
+        self.injector.cleanup()
+
+        self.assertEqual([os.path.exists(path) for path in self.scripts], [False, False])
+
 
 if __name__ == "__main__":
     unittest.main()

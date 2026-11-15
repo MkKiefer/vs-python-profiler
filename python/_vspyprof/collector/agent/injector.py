@@ -19,7 +19,8 @@ class AgentInjector:
     _DISABLED_HINT = " (the target disabled remote debugging via PYTHON_DISABLE_REMOTE_DEBUG / -X disable_remote_debug)"
 
     def __init__(self) -> None:
-        self._script_path: str | None = None
+        self._script_paths: set[str] = set()
+        self._lock = threading.Lock()
 
     @staticmethod
     def is_supported() -> bool:
@@ -34,27 +35,40 @@ class AgentInjector:
         if not self.is_supported():
             raise AgentInjectionError("sys.remote_exec is not available in this interpreter")
         path = self._write_script(agent_address, options_json)
-        self._script_path = path
+        with self._lock:
+            self._script_paths.add(path)
         try:
             sys.remote_exec(pid, path)
         except Exception as error:  # remote_exec raises a wide range of OS and runtime errors
-            self.cleanup()
+            self._delete(path)
             message = str(error)
             if "disable" in message.lower():
                 message += self._DISABLED_HINT
             raise AgentInjectionError(message) from error
-        timer = threading.Timer(self._SCRIPT_LIFETIME, self.cleanup)
+        timer = threading.Timer(self._SCRIPT_LIFETIME, self._delete, args=(path,))
         timer.daemon = True
         timer.start()
 
     def cleanup(self) -> None:
-        """Delete the bootstrap script (called once the agent has connected)."""
-        path, self._script_path = self._script_path, None
-        if path is not None:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        """Delete every bootstrap script still on disk (called once the agent has connected)."""
+        with self._lock:
+            paths, self._script_paths = self._script_paths, set()
+        for path in paths:
+            self._unlink(path)
+
+    def _delete(self, path: str) -> None:
+        with self._lock:
+            if path not in self._script_paths:
+                return  # already deleted
+            self._script_paths.discard(path)
+        self._unlink(path)
+
+    @staticmethod
+    def _unlink(path: str) -> None:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
     @staticmethod
     def _write_script(agent_address: str, options_json: str) -> str:
