@@ -34,18 +34,42 @@ class WindowsProcessStatsReader(ProcessStatsReader):
     def __init__(self, pid: int) -> None:
         super().__init__(pid)
         self._handle: int | None = None
+        self._kernel32: ctypes.CDLL | None = None
 
     def close(self) -> None:
         if sys.platform != "win32":
             return
         if self._handle:
-            ctypes.windll.kernel32.CloseHandle(self._handle)
+            self._api().CloseHandle(self._handle)
             self._handle = None
+
+    def _api(self) -> ctypes.CDLL:
+        """kernel32 with declared signatures.
+
+        Undeclared, ctypes passes and returns C ``int``, which truncates 64-bit handles.
+        """
+        if sys.platform != "win32":
+            raise OSError("kernel32 exists on Windows only")
+        if self._kernel32 is None:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle, pointer = wintypes.HANDLE, ctypes.c_void_p
+            kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel32.OpenProcess.restype = handle
+            kernel32.CloseHandle.argtypes = (handle,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.K32GetProcessMemoryInfo.argtypes = (handle, pointer, wintypes.DWORD)
+            kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+            kernel32.GetExitCodeProcess.argtypes = (handle, pointer)
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.GetProcessTimes.argtypes = (handle, pointer, pointer, pointer, pointer)
+            kernel32.GetProcessTimes.restype = wintypes.BOOL
+            self._kernel32 = kernel32
+        return self._kernel32
 
     def _read(self) -> ProcessStats | None:
         if sys.platform != "win32":
             return None
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = self._api()
         if not self._handle:
             self._handle = kernel32.OpenProcess(self._PROCESS_QUERY_LIMITED_INFORMATION, False, self._pid)
             if not self._handle:

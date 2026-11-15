@@ -50,9 +50,11 @@ class Tachyon:
     READ_ERRORS = _READ_ERRORS
     _MODE_ALL = 3  # profiling.sampling.constants.PROFILING_MODE_ALL
     _LAUNCHER_RESOLVE_TIMEOUT = 2.0
+    _ALIVE_RECHECK = 0.25  # seconds between Windows liveness checks; reads of a gone process fail meanwhile
 
     def __init__(self, pid: int, *, native: bool, gc: bool) -> None:
         self.require()
+        self._alive_checked = 0.0
         self._pid = self._resolve_python_pid(pid)
         self._unwinder = self._create_unwinder(self._pid, native, gc)
         self._gc_monitor = self._create_gc_monitor(self._pid)
@@ -81,7 +83,13 @@ class Tachyon:
         return self._pid
 
     def is_alive(self) -> bool:
+        """Whether the target still runs; called after read errors, which can happen on many ticks in a row."""
         if os.name == "nt":
+            # no cheap probe on Windows (os.kill would terminate it): build an unwinder, at most every so often
+            now = time.monotonic()
+            if now - self._alive_checked < self._ALIVE_RECHECK:
+                return True
+            self._alive_checked = now
             try:
                 RemoteUnwinder(self._pid)
             except _READ_ERRORS:
