@@ -156,8 +156,10 @@ class Agent(threading.Thread):
             case StopTracing():
                 return self._memory.stop_tracing()
             case TakeSnapshot(limit=limit):
+                self._loops.discard_pending()  # the snapshot pauses the program; that is not loop lag
                 return self._memory.snapshot(limit)
             case CountObjects(limit=limit):
+                self._loops.discard_pending()  # so does walking every object
                 return self._memory.object_counts(limit)
             case SetAsyncioDebug(enabled=enabled, slow_ms=slow_ms):
                 self._loops.set_debug(enabled, slow_ms)

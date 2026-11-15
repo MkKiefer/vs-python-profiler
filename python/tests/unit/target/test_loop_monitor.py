@@ -55,6 +55,33 @@ class TestLoopMonitor(unittest.TestCase):
 
         self.assertGreaterEqual(metrics.lag_ms, 750.0)
 
+    def test_discard_pending_ignores_probe_answered_after_the_pause(self) -> None:
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.loop.call_soon_threadsafe(release.wait, 5)
+        self.monitor.probe(time.perf_counter())
+        self.monitor.discard_pending()
+        time.sleep(0.3)  # the pause the probe must not report
+        release.set()
+        self.run_on_loop()
+
+        metrics = self.monitor.take_metrics(time.perf_counter())[0]
+
+        self.assertLess(metrics.lag_ms, 300.0)
+
+    def test_probe_after_discard_pending_measures_afresh(self) -> None:
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.loop.call_soon_threadsafe(release.wait, 5)
+        self.monitor.probe(time.perf_counter())
+        self.monitor.discard_pending()
+        sent = time.perf_counter()
+        self.monitor.probe(sent)
+
+        metrics = self.monitor.take_metrics(sent + 0.5)[0]
+
+        self.assertGreaterEqual(metrics.lag_ms, 500.0)
+
     def test_probe_forgets_loop_that_stopped(self) -> None:
         self.monitor.probe(time.perf_counter())
         self.run_on_loop()

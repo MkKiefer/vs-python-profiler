@@ -41,6 +41,8 @@ class LoopMonitor:
     def __init__(self, debug_capture: AsyncioDebugCapture) -> None:
         self._debug_capture = debug_capture
         self._probes: dict[int, _LoopProbe] = {}
+        self._generation = 0
+        """Probes sent in an earlier generation are ignored when they are answered (see ``discard_pending``)."""
         self._last_scan = 0.0
         self._debug = False
         self._slow_callback_ms = 100.0
@@ -68,9 +70,22 @@ class LoopMonitor:
                 continue  # previous probe not yet executed: loop is blocked
             probe.pending_since = now
             try:
-                probe.loop.call_soon_threadsafe(self._probe_done, key, now)
+                probe.loop.call_soon_threadsafe(self._probe_done, key, now, self._generation)
             except RuntimeError:
                 self._probes.pop(key, None)
+
+    def discard_pending(self) -> None:
+        """Forget the probes in flight: the profiler is about to pause the whole program.
+
+        A tracemalloc snapshot or an object count holds the GIL for up to seconds.
+        A probe answered after that would report the profiler's pause as the
+        program's own loop lag, so it is ignored, and the next ``probe`` measures
+        afresh. Call this *before* the pause: the loop may answer the old probe
+        before this thread runs again.
+        """
+        self._generation += 1
+        for probe in self._probes.values():
+            probe.pending_since = None
 
     def take_metrics(self, now: float) -> list[LoopMetrics]:
         """Worst lag and task count of every loop since the previous call."""
@@ -103,10 +118,10 @@ class LoopMonitor:
         else:
             self._debug_capture.remove()
 
-    def _probe_done(self, key: int, sent: float) -> None:
+    def _probe_done(self, key: int, sent: float, generation: int) -> None:
         """Runs on the event loop: the time since ``sent`` is how long a callback had to wait."""
         probe = self._probes.get(key)
-        if probe is None:
+        if probe is None or generation != self._generation:
             return
         probe.max_lag_ms = max(probe.max_lag_ms, (time.perf_counter() - sent) * 1000.0)
         probe.pending_since = None
