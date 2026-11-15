@@ -1,7 +1,9 @@
 """The sampling loop."""
 
+import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 
 from _vspyprof.collector.options import CollectorOptions
@@ -103,6 +105,7 @@ class Sampler:
 
     def _run(self) -> None:
         target_exited = False
+        failure: str | None = None
         next_tick = time.perf_counter()
         try:
             while not self._stop.is_set():
@@ -120,10 +123,15 @@ class Sampler:
                     target_exited = True
                     break
                 self._run_periodic_jobs(now, t)
+        except Exception as error:  # a bug must not leave the session "running" without samples
+            traceback.print_exc(file=sys.stderr)
+            failure = f"Sampling stopped: {type(error).__name__}: {error}"
         finally:
             self._stats_reader.close()
             if target_exited:
                 self._listener.on_target_exit(StopReason.EXITED)
+            elif failure is not None:
+                self._listener.on_sampler_error(failure)
 
     def _sample(self, t: float) -> bool:
         """Take one sample. Returns ``False`` once the target is gone."""

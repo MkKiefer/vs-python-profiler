@@ -21,3 +21,4 @@ class StopReason(StrEnum):
     USER = "user"
     SHUTDOWN = "shutdown"
     EXITED = "exited"
+    ERROR = "error"

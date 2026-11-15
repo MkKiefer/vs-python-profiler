@@ -7,6 +7,7 @@ class EventKind(StrEnum):
     """``kind`` of a timeline event. The dashboard styles the ones it knows and shows the others as text."""
 
     AGENT = "agent"
+    SAMPLER = "sampler"
     ASYNCIO = "asyncio"
     SLOW_CALLBACK = "slow-callback"
     NEVER_AWAITED = "never-awaited"

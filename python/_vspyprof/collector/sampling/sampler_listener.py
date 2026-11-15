@@ -12,4 +12,8 @@ class SamplerListener(ABC):
     def on_target_exit(self, reason: StopReason) -> None: ...
 
     @abstractmethod
+    def on_sampler_error(self, message: str) -> None:
+        """The sampling loop failed unexpectedly and has stopped; ``message`` says why."""
+
+    @abstractmethod
     def on_children(self, pids: list[int]) -> None: ...

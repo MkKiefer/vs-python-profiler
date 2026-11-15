@@ -245,6 +245,14 @@ class CollectorSession(AgentListener, SamplerListener):
         self._flush()
         self._notify(StateChanged(self._state, reason=reason))
 
+    def on_sampler_error(self, message: str) -> None:
+        with self._lock:
+            self._state = SessionState.STOPPED
+        self._store.add_event(EventKind.SAMPLER, message)
+        self._flush()
+        self._notify(ErrorOccurred(message))
+        self._notify(StateChanged(SessionState.STOPPED, reason=StopReason.ERROR))
+
     def on_children(self, pids: list[int]) -> None:
         self._notify(ChildrenFound(pids))
 

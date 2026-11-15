@@ -273,6 +273,17 @@ class TestCollectorSession(unittest.TestCase):
 
         self.assertEqual(self.notifications("StateChanged")[-1], {"state": "exited", "pid": None, "reason": "exited"})
 
+    def test_on_sampler_error_reports_error_and_stopped_state(self) -> None:
+        self.session.on_sampler_error("Sampling stopped: RuntimeError: boom")
+
+        events = JsonView(self.store.full()).get_list("events")
+        self.assertEqual(self.notifications("ErrorOccurred"), [{"message": "Sampling stopped: RuntimeError: boom"}])
+        self.assertEqual(self.notifications("StateChanged")[-1], {"state": "stopped", "pid": None, "reason": "error"})
+        status = self.session.run(requests.GetStatus())
+        assert isinstance(status, StatusResult)
+        self.assertEqual(status.state, "stopped")
+        self.assertIn("sampler", [event["kind"] for event in events if isinstance(event, dict)])
+
     def test_on_children_notifies_child_pids(self) -> None:
         self.session.on_children([11, 12])
 
