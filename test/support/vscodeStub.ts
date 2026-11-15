@@ -138,6 +138,25 @@ function passiveItem(): Record<string, unknown> {
   return { show: () => undefined, hide: () => undefined, dispose: () => undefined };
 }
 
+/** A terminal that runs nothing; tests close it through `terminals.close`. */
+export interface StubTerminal {
+  name: string;
+  exitStatus: { code: number | undefined } | undefined;
+  show: () => void;
+  dispose: () => void;
+}
+
+const terminalClosed = new EventEmitter<StubTerminal>();
+
+/** Terminals the extension created, and a way to close them as if their process had exited. */
+export const terminals = {
+  created: [] as StubTerminal[],
+  close(terminal: StubTerminal, code: number | undefined): void {
+    terminal.exitStatus = { code };
+    terminalClosed.fire(terminal);
+  },
+};
+
 export const window = {
   activeTextEditor: undefined,
   visibleTextEditors: [] as unknown[],
@@ -159,6 +178,12 @@ export const window = {
     return registration();
   },
   onDidChangeVisibleTextEditors: () => registration(),
+  createTerminal: (options: { name: string }): StubTerminal => {
+    const terminal: StubTerminal = { name: options.name, exitStatus: undefined, show: () => undefined, dispose: () => undefined };
+    terminals.created.push(terminal);
+    return terminal;
+  },
+  onDidCloseTerminal: terminalClosed.event,
   showInformationMessage: () => Promise.resolve(undefined),
   showWarningMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),

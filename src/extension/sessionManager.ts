@@ -60,8 +60,11 @@ export class SessionManager implements vscode.Disposable {
     private readonly storageDir: string,
   ) {
     fs.mkdirSync(this.storageDir, { recursive: true });
+    this.terminalClosed = vscode.window.onDidCloseTerminal((terminal) => this.onTerminalClosed(terminal));
     this.refreshContext();
   }
+
+  private readonly terminalClosed: vscode.Disposable;
 
   /** newest first */
   get sessions(): readonly Session[] {
@@ -171,6 +174,21 @@ export class SessionManager implements vscode.Disposable {
       void session.client?.shutdown();
     }, STARTUP_TIMEOUT_MS);
     this.startupTimers.set(session, timer);
+  }
+
+  /**
+   * A launched program whose terminal closes before its agent connected never will (a missing script, an
+   * import error, an old interpreter): fail at once instead of after the start-up timeout.
+   */
+  private onTerminalClosed(terminal: vscode.Terminal): void {
+    for (const session of this.all) {
+      if (session.terminal !== terminal || session.state !== 'waiting') continue;
+      const code = terminal.exitStatus?.code;
+      const exited = code === undefined ? 'The program exited' : `The program exited with code ${code}`;
+      session.setState('error', `${exited} before it connected to the profiler.`);
+      void vscode.window.showErrorMessage(`Python Profiler: "${session.label}": ${exited.toLowerCase()} before profiling started.`);
+      void session.client?.shutdown();
+    }
   }
 
   // ------------------------------------------------------------- stopping
@@ -318,6 +336,7 @@ export class SessionManager implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.terminalClosed.dispose();
     for (const timer of this.startupTimers.values()) clearTimeout(timer);
     for (const session of this.all) {
       void session.client?.shutdown();

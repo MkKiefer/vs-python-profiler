@@ -16,7 +16,7 @@ import type { PythonInfo } from '../src/extension/environment';
 import { ExtPaths } from '../src/extension/paths';
 import type { Session } from '../src/extension/session';
 import { SessionManager } from '../src/extension/sessionManager';
-import { window } from './support/vscodeStub';
+import { terminals, window } from './support/vscodeStub';
 
 // tests are bundled into dist-test/, one level below the repository root
 const ROOT = path.join(__dirname, '..');
@@ -103,6 +103,22 @@ test('deleting a saved profile closes the session showing it', { skip }, () => {
   assert.deepEqual(sessions.sessions, []);
   assert.deepEqual(sessions.savedProfiles(), []);
   assert.equal(sessions.active, undefined);
+});
+
+test('a launched program whose terminal closes before connecting fails at once', { skip }, async () => {
+  const info: PythonInfo = { executable: python ?? '', version: '3.15', major: 3, minor: 15, freeThreaded: false, label: 'test' };
+  // the stub terminal runs nothing: the program never connects, as when the script is missing
+  const launched = await sessions.launch({ python: info, kind: 'path', target: 'missing.py', args: [], label: 'missing.py' });
+  assert.equal(launched.state, 'waiting');
+  const terminal = terminals.created.at(-1);
+  assert.ok(terminal);
+
+  terminals.close(terminal, 2);
+
+  assert.equal(launched.state, 'error');
+  assert.equal(launched.error, 'The program exited with code 2 before it connected to the profiler.');
+  await until(() => launched.client === undefined, 'collector shutdown');
+  await sessions.remove(launched);
 });
 
 test('removing a live session waits for its auto-save', { skip }, async () => {
