@@ -19,15 +19,22 @@ export const STATUS_ON_CPU = 2;
 export const STATUS_GIL_REQUESTED = 8;
 
 const DEFAULT_RATE_HZ = 1000;
+/** sample table capacity: the first allocation, then growth by this factor */
+const MIN_CAPACITY = 1024;
+const GROWTH = 1.5;
 
 export type Mode = 'wall' | 'cpu' | 'gil';
 export type Source = 'threads' | 'async';
 
+/**
+ * Sample columns of a delta. JSON (collector deltas, saved files) gives plain arrays; `toDelta()` gives
+ * typed arrays of exactly the sample count, which `postMessage` carries as binary instead of JSON.
+ */
 export interface Columns {
-  t: number[];
-  tid: number[];
-  stack: number[];
-  status: number[];
+  t: number[] | Float64Array;
+  tid: number[] | Float64Array;
+  stack: number[] | Int32Array;
+  status: number[] | Uint8Array;
 }
 
 export interface TaskRec {
@@ -189,15 +196,16 @@ function appendAll<T>(target: T[], items: readonly T[]): void {
 }
 
 class SampleTable {
-  t = new Float64Array(1024);
-  tid = new Float64Array(1024);
-  stack = new Int32Array(1024);
-  status = new Uint8Array(1024);
+  t: Float64Array = new Float64Array(MIN_CAPACITY);
+  tid: Float64Array = new Float64Array(MIN_CAPACITY);
+  stack: Int32Array = new Int32Array(MIN_CAPACITY);
+  status: Uint8Array = new Uint8Array(MIN_CAPACITY);
   length = 0;
 
   append(c: Columns): void {
     const n = c.t.length;
     if (!n) return;
+    if (this.length === 0 && this.adopt(c)) return;
     this.reserve(this.length + n);
     const base = this.length;
     for (let i = 0; i < n; i++) {
@@ -209,10 +217,32 @@ class SampleTable {
     this.length += n;
   }
 
+  /**
+   * Take typed columns over as the table instead of copying them: a dashboard's `init` holds the whole
+   * profile, and copying it would hold it twice. The caller hands them over and must not change them.
+   */
+  private adopt(c: Columns): boolean {
+    if (
+      !(c.t instanceof Float64Array) ||
+      !(c.tid instanceof Float64Array) ||
+      !(c.stack instanceof Int32Array) ||
+      !(c.status instanceof Uint8Array)
+    ) {
+      return false;
+    }
+    this.t = c.t;
+    this.tid = c.tid;
+    this.stack = c.stack;
+    this.status = c.status;
+    this.length = c.t.length;
+    return true;
+  }
+
   private reserve(n: number): void {
     if (n <= this.t.length) return;
-    let cap = this.t.length;
-    while (cap < n) cap *= 2;
+    // grow by half: tables only grow, and doubling leaves up to half of a large table unused
+    let cap = Math.max(this.t.length, MIN_CAPACITY);
+    while (cap < n) cap = Math.ceil(cap * GROWTH);
     const used = this.length;
     const t = new Float64Array(cap);
     t.set(this.t.subarray(0, used));
@@ -240,13 +270,14 @@ class SampleTable {
     return lo;
   }
 
+  /** Copies of the columns, exactly `length` long (21 bytes per sample; `Array.from` would take far more). */
   toColumns(): Columns {
     const n = this.length;
     return {
-      t: Array.from(this.t.subarray(0, n)),
-      tid: Array.from(this.tid.subarray(0, n)),
-      stack: Array.from(this.stack.subarray(0, n)),
-      status: Array.from(this.status.subarray(0, n)),
+      t: this.t.slice(0, n),
+      tid: this.tid.slice(0, n),
+      stack: this.stack.slice(0, n),
+      status: this.status.slice(0, n),
     };
   }
 }

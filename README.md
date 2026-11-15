@@ -89,6 +89,11 @@ python/_vspyprof/
   (`src/shared/model.ts`) share one schema: frames, stack prefix tree, samples
   (`t, tid, stack, status`), tracks, tasks, snapshots and events. Live deltas and
   `.vspyprof` files (gzip JSON) have the same shape.
+- **Samples stay compact.** They are the one table that grows with time × threads, so
+  they are typed columns everywhere: `array.array` in the collector, typed arrays in
+  `ProfileModel` (21 bytes per sample). A dashboard's `init` sends them as typed arrays,
+  which `postMessage` transfers as binary and the dashboard adopts without copying, and
+  both the collector and the extension stream them into `.vspyprof` files chunk by chunk.
 - **One wire contract.** Every message that crosses a process boundary (webview ⇄
   extension ⇄ collector) is declared in
   `src/shared/protocol.ts`. Both Python streams (extension ⇄ collector over stdio,

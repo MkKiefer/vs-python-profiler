@@ -8,7 +8,7 @@ import * as zlib from 'node:zlib';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia } from 'pinia';
 import type { Router } from 'vue-router';
-import type { Delta } from '../../../src/shared/model';
+import { ProfileModel, type Delta } from '../../../src/shared/model';
 import type { Capabilities, SessionState } from '../../../src/shared/protocol';
 import App from '../../../src/webview/App.vue';
 import { createDashboardRouter } from '../../../src/webview/router';
@@ -21,6 +21,13 @@ export type Fixture = 'cpu' | 'leaky' | 'async';
 export function loadDelta(name: Fixture): Delta {
   const file = path.resolve(__dirname, '..', '..', 'fixtures', `${name}.vspyprof`);
   return JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString()) as Delta;
+}
+
+/** What the extension sends as `init` for a fixture: its model's `toDelta()`, sample columns as typed arrays. */
+export function initDelta(name: Fixture): Delta {
+  const model = new ProfileModel();
+  model.applyDelta(loadDelta(name));
+  return model.toDelta();
 }
 
 export interface MountOptions {
@@ -48,7 +55,7 @@ export async function mountApp(path: string, options: MountOptions = {}): Promis
   const state: SessionState = live ? 'running' : 'file';
   const capabilities: Capabilities = { agent: live, tracemalloc: false, asyncioDebug: false, live, ...options.capabilities };
   const host = new MockHostClient(
-    { label: `${options.fixture ?? 'cpu'}.py`, state, capabilities, data: loadDelta(options.fixture ?? 'cpu') },
+    { label: `${options.fixture ?? 'cpu'}.py`, state, capabilities, data: initDelta(options.fixture ?? 'cpu') },
     { route: path, mode: 'wall', source: 'threads', hideLibs: false, byLine: false },
   );
   const router = createDashboardRouter();

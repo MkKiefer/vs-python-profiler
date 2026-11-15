@@ -1,7 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Cat, ProfileModel, type TreeNode } from '../src/shared/model';
+import { Cat, ProfileModel, type Columns, type Delta, type TreeNode } from '../src/shared/model';
 import { loadProfile } from './support/fixtures';
+
+/** A live delta that adds nothing. */
+function emptyDelta(): Delta {
+  const columns = (): Columns => ({ t: [], tid: [], stack: [], status: [] });
+  return {
+    now: 0,
+    frames: [],
+    stacks: [],
+    samples: columns(),
+    asyncSamples: columns(),
+    tracks: {},
+    gc: [],
+    markers: [],
+    events: [],
+    taskEvents: [],
+    tasks: [],
+    threads: {},
+    snapshots: [],
+    objectCounts: [],
+  };
+}
 
 test('cpu profile contains the hot functions and the worker thread', () => {
   const m = loadProfile('cpu');
@@ -149,6 +170,40 @@ test('frames are classified as user code or stdlib', () => {
 
   assert.equal(m.frames.find((f) => f.file.includes('asyncio'))?.cat, Cat.Std);
   assert.equal(m.frames.find((f) => f.file.endsWith('async_storm.py'))?.cat, Cat.User);
+});
+
+test('toDelta returns typed sample columns of exactly the sample count', () => {
+  const m = loadProfile('cpu');
+
+  const { samples } = m.toDelta();
+
+  assert.ok(samples.t instanceof Float64Array && samples.tid instanceof Float64Array);
+  assert.ok(samples.stack instanceof Int32Array && samples.status instanceof Uint8Array);
+  assert.deepEqual([samples.t.length, samples.tid.length, samples.stack.length, samples.status.length], Array(4).fill(m.samples.length));
+});
+
+test('applyDelta into an empty model takes typed columns over without copying', () => {
+  const delta = loadProfile('cpu').toDelta();
+
+  const copy = new ProfileModel();
+  copy.applyDelta(delta);
+
+  assert.equal(copy.samples.t, delta.samples.t);
+  assert.equal(copy.samples.status, delta.samples.status);
+});
+
+test('samples appended after taking columns over are kept in order', () => {
+  const m = loadProfile('cpu');
+  const copy = new ProfileModel();
+  copy.applyDelta(m.toDelta());
+  const last = m.samples.t[m.samples.length - 1];
+  const live = { ...emptyDelta(), samples: { t: [last + 1, last + 2], tid: [7, 7], stack: [0, 0], status: [3, 0] } };
+
+  copy.applyDelta(live);
+
+  assert.equal(copy.samples.length, m.samples.length + 2);
+  assert.deepEqual(Array.from(copy.samples.t.subarray(copy.samples.length - 3, copy.samples.length)), [last, last + 1, last + 2]);
+  assert.equal(copy.samples.lowerBound(last + 2), copy.samples.length - 1);
 });
 
 test('toDelta round-trips through applyDelta', () => {
