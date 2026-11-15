@@ -15,10 +15,11 @@ class TestAgentConnection(AgentLinkTestCase):
         caller.start()
 
         request = self.agent.read()
-        self.agent.send({"type": "result", "id": request.id, "result": {"t": 1.5, "counts": [["dict", 3]]}})
+        counts = {"type": "ObjectCounts", "t": 1.5, "counts": [{"type": "TypeCount", "typeName": "dict", "count": 3}]}
+        self.agent.send({"type": "Response", "id": request.id, "result": counts, "error": None})
         caller.join(5)
 
-        self.assertEqual((request.method, request.params), ("object_counts", {"limit": 5}))
+        self.assertEqual(request.body, CountObjects(5))
         self.assertEqual(replies, [ObjectCounts(1.5, [TypeCount("dict", 3)])])
 
     def test_request_with_reply_of_another_shape_raises_agent_error(self) -> None:
@@ -35,10 +36,10 @@ class TestAgentConnection(AgentLinkTestCase):
         caller.start()
 
         request = self.agent.read()
-        self.agent.send({"type": "result", "id": request.id, "result": {"pid": 1}})
+        self.agent.send({"type": "Response", "id": request.id, "result": {"type": "TracingStatus", "tracing": True}})
         caller.join(5)
 
-        self.assertIn("agent answered 'ping' with something else: result.t is missing", str(errors[0]))
+        self.assertEqual(str(errors[0]), "agent answered Ping with TracingStatus")
 
     def test_request_with_error_reply_raises_agent_error(self) -> None:
         connection = self.connect()
@@ -54,7 +55,7 @@ class TestAgentConnection(AgentLinkTestCase):
         caller.start()
 
         request = self.agent.read()
-        self.agent.send({"type": "result", "id": request.id, "error": "RuntimeError: not tracing"})
+        self.agent.send({"type": "Response", "id": request.id, "error": "RuntimeError: not tracing"})
         caller.join(5)
 
         self.assertEqual(str(errors[0]), "RuntimeError: not tracing")
@@ -65,7 +66,7 @@ class TestAgentConnection(AgentLinkTestCase):
         with self.assertRaises(AgentError) as ctx:
             connection.request(Ping(), Pong, timeout=0.05)
 
-        self.assertIn("did not answer 'ping'", str(ctx.exception))
+        self.assertIn("did not answer Ping", str(ctx.exception))
 
     def test_disconnect_notifies_listener_and_marks_connection_dead(self) -> None:
         connection = self.connect()

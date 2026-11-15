@@ -36,11 +36,13 @@ class CollectorCli:
             sys.stderr.write(f"Python {wanted}+ required, got {sys.version}\n")
             sys.exit(self.EXIT_UNSUPPORTED_PYTHON)
         # Deliberately imported here: these modules use Python 3.15 syntax and APIs.
+        from _vscode_pyprof.agent_protocol.messages import FROM_AGENT
         from _vscode_pyprof.collector.agent.injector import AgentInjector
         from _vscode_pyprof.collector.agent.server import AgentServer
         from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
         from _vscode_pyprof.collector.frames.func_resolver import FuncResolver
         from _vscode_pyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
+        from _vscode_pyprof.collector.messages import FROM_EXTENSION
         from _vscode_pyprof.collector.profile_writer import ProfileWriter
         from _vscode_pyprof.collector.rpc import RpcServer
         from _vscode_pyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
@@ -49,24 +51,27 @@ class CollectorCli:
         from _vscode_pyprof.collector.store.session_clock import SessionClock
         from _vscode_pyprof.collector.store.stack_table import StackTable
         from _vscode_pyprof.collector.store.store import Store
+        from _vscode_pyprof.wire import WireDecoder, WireEncoder
 
         out = sys.stdout.buffer
         sys.stdout = sys.stderr  # nothing may print to the RPC channel
-        rpc = RpcServer(sys.stdin.buffer, out)
+        encoder = WireEncoder()
+        rpc = RpcServer(sys.stdin.buffer, out, encoder, WireDecoder(FROM_EXTENSION))
         clock = SessionClock()
         store = Store(clock, StackTable(FrameClassifier.for_running_interpreter()))
         session = CollectorSession(
             rpc=rpc,
             store=store,
             clock=clock,
-            agent_server=AgentServer(),
+            agent_server=AgentServer(encoder, WireDecoder(FROM_AGENT)),
             injector=AgentInjector(),
             sampler_factory=SamplerFactory(store, clock, ProcessStatsReaderFactory()),
             snapshot_builder=MemorySnapshotBuilder(store, clock, FuncResolver()),
             profile_writer=ProfileWriter(),
+            encoder=encoder,
         )
         session.start()
-        rpc.serve()
+        rpc.serve(session.run)
         # stdin closed: the extension went away
         os._exit(0)
 

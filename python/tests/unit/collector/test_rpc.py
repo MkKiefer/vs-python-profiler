@@ -3,26 +3,23 @@ import json
 import threading
 import unittest
 from dataclasses import dataclass
-from typing import Self
 
+from _vscode_pyprof.collector.notifications import StateChanged
+from _vscode_pyprof.collector.protocol import SessionState
 from _vscode_pyprof.collector.rpc import RpcError, RpcServer
-from _vscode_pyprof.collector.rpc_params import NoParams
-from _vscode_pyprof.wire import JsonObject, WireMessage, WireReader, WireWritable
-from tests.unit.json_view import JsonView
+from _vscode_pyprof.wire import JsonObject, Request, WireDecoder, WireEncoder
 
 
-@dataclass(frozen=True, slots=True)
-class _Echo(WireMessage):
-    """The params and the result of the test's ``echo`` method."""
+@dataclass(frozen=True)
+class _Echo:
+    """The request and the result of the test's handler."""
 
     name: str
 
-    def to_wire(self) -> JsonObject:
-        return {"name": self.name}
 
-    @classmethod
-    def from_wire(cls, raw: object, where: str = "$") -> Self:
-        return cls(name=WireReader.for_object(raw, where).get("name", str))
+@dataclass(frozen=True)
+class _Fail:
+    pass
 
 
 class _RecordingOutput(io.BytesIO):
@@ -47,73 +44,72 @@ class TestRpcServer(unittest.TestCase):
     def setUp(self) -> None:
         self.output = _RecordingOutput()
 
-    def _serve(self, *requests: JsonObject) -> RpcServer:
-        payload = "".join(json.dumps(request) + "\n" for request in requests).encode()
-        server = RpcServer(io.BytesIO(payload), self.output)
-        server.register("echo", _Echo, lambda params: _Echo(params.name))
-        server.register("fail", NoParams, self._raise_rpc_error)
-        server.serve()
+    def server(self, payload: bytes = b"") -> RpcServer:
+        return RpcServer(io.BytesIO(payload), self.output, WireEncoder(), WireDecoder([Request, _Echo, _Fail]))
+
+    def serve(self, *lines: str) -> RpcServer:
+        server = self.server("".join(line + "\n" for line in lines).encode())
+        server.serve(self.handle)
         return server
 
     @staticmethod
-    def _raise_rpc_error(_params: NoParams) -> WireWritable:
-        raise RpcError("not now")
+    def handle(request: object) -> object:
+        match request:
+            case _Echo(name=name):
+                return _Echo(name.upper())
+            case _Fail():
+                raise RpcError("not now")
+        raise RpcError(f"unknown request {type(request).__name__}")
 
-    def test_serve_with_known_method_writes_result(self) -> None:
-        self._serve({"id": 1, "method": "echo", "params": {"name": "x"}})
-
-        messages = self.output.wait_for_messages(1)
-
-        self.assertListEqual(messages, [{"id": 1, "result": {"name": "x"}}])
-
-    def test_serve_with_unknown_method_writes_error(self) -> None:
-        self._serve({"id": 2, "method": "nope"})
+    def test_serve_answers_a_request_with_the_handler_result(self) -> None:
+        self.serve('{"type": "Request", "id": 1, "body": {"type": "_Echo", "name": "x"}}')
 
         messages = self.output.wait_for_messages(1)
 
-        self.assertEqual(messages[0]["error"], {"message": "unknown method 'nope'", "type": "RpcError"})
-
-    def test_serve_with_failing_handler_writes_error_message(self) -> None:
-        self._serve({"id": 3, "method": "fail"})
-
-        messages = self.output.wait_for_messages(1)
-
-        self.assertEqual(messages[0]["error"], {"message": "not now", "type": "RpcError"})
-
-    def test_serve_with_malformed_params_writes_wire_error(self) -> None:
-        self._serve({"id": 4, "method": "echo", "params": {"name": 5}})
-
-        messages = self.output.wait_for_messages(1)
-
-        self.assertEqual(JsonView.of(messages[0]["error"]).get_str("type"), "WireError")
-
-    def test_serve_with_invalid_json_line_skips_it(self) -> None:
-        server = RpcServer(
-            io.BytesIO(b'not json\n{"id": 5, "method": "echo", "params": {"name": "ok"}}\n'), self.output
+        self.assertListEqual(
+            messages, [{"type": "Response", "id": 1, "result": {"type": "_Echo", "name": "X"}, "error": None}]
         )
-        server.register("echo", _Echo, lambda params: _Echo(params.name))
 
-        server.serve()
+    def test_serve_with_failing_handler_answers_its_error(self) -> None:
+        self.serve('{"type": "Request", "id": 3, "body": {"type": "_Fail"}}')
 
-        self.assertListEqual(self.output.wait_for_messages(1), [{"id": 5, "result": {"name": "ok"}}])
+        messages = self.output.wait_for_messages(1)
+
+        self.assertEqual((messages[0]["result"], messages[0]["error"]), (None, "not now"))
+
+    def test_serve_with_malformed_body_answers_the_wire_error(self) -> None:
+        self.serve('{"type": "Request", "id": 4, "body": {"type": "_Echo", "nom": "x"}}')
+
+        messages = self.output.wait_for_messages(1)
+
+        self.assertRegex(str(messages[0]["error"]), r"\$\.body is not a _Echo")
+
+    def test_serve_with_line_that_is_not_a_request_skips_it(self) -> None:
+        self.serve(
+            "not json", '{"type": "_Echo", "name": "x"}', '{"type": "Request", "id": 5, "body": {"type": "_Fail"}}'
+        )
+
+        messages = self.output.wait_for_messages(1)
+
+        self.assertEqual([message["id"] for message in messages], [5])
 
     def test_serve_when_input_ends_marks_server_closed(self) -> None:
-        server = self._serve()
+        server = self.serve()
 
         self.assertTrue(server.closed)
 
-    def test_notify_writes_message_without_id(self) -> None:
-        server = RpcServer(io.BytesIO(), self.output)
+    def test_notify_writes_the_message(self) -> None:
+        self.server().notify(StateChanged(SessionState.RUNNING, pid=12))
 
-        server.notify("state", {"state": "running"})
-
-        self.assertListEqual(self.output.wait_for_messages(1), [{"method": "state", "params": {"state": "running"}}])
+        self.assertListEqual(
+            self.output.wait_for_messages(1), [{"type": "StateChanged", "state": "running", "pid": 12, "reason": None}]
+        )
 
     def test_notify_on_closed_output_marks_server_closed(self) -> None:
         self.output.close()
-        server = RpcServer(io.BytesIO(), self.output)
+        server = self.server()
 
-        server.notify("state", {"state": "running"})
+        server.notify(StateChanged(SessionState.RUNNING))
 
         self.assertTrue(server.closed)
 

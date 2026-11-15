@@ -6,19 +6,38 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, create_autospec
 
-from _vscode_pyprof.agent_protocol.commands import SetAsyncioDebug, StartTracing
+from _vscode_pyprof import PROTOCOL_VERSION
+from _vscode_pyprof.agent_protocol import commands
 from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
+from _vscode_pyprof.agent_protocol.messages import FROM_AGENT, TO_AGENT
 from _vscode_pyprof.agent_protocol.metrics import AgentEvent, AgentMetrics, EventDetails, LoopMetrics, TracedMemory
-from _vscode_pyprof.agent_protocol.replies import AsyncioDebugStatus, HeapSnapshot, TracingStatus
+from _vscode_pyprof.agent_protocol.options import AgentOptions
+from _vscode_pyprof.agent_protocol.replies import (
+    Allocation,
+    AsyncioDebugStatus,
+    HeapSnapshot,
+    SourceLine,
+    TracingStatus,
+)
+from _vscode_pyprof.collector import requests
 from _vscode_pyprof.collector.agent.connection import AgentConnection
 from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
 from _vscode_pyprof.collector.agent.server import AgentServer
 from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
 from _vscode_pyprof.collector.frames.func_resolver import FuncResolver
 from _vscode_pyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
+from _vscode_pyprof.collector.messages import FROM_EXTENSION
+from _vscode_pyprof.collector.options import CollectorOptions
 from _vscode_pyprof.collector.profile_writer import ProfileWriter
 from _vscode_pyprof.collector.protocol import StopReason
-from _vscode_pyprof.collector.rpc import RpcServer
+from _vscode_pyprof.collector.rpc import RpcError, RpcServer
+from _vscode_pyprof.collector.rpc_results import (
+    AttachResult,
+    InitializeResult,
+    SaveResult,
+    SnapshotResult,
+    StatusResult,
+)
 from _vscode_pyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
 from _vscode_pyprof.collector.sampling.sampler import Sampler
 from _vscode_pyprof.collector.sampling.sampler_factory import SamplerFactory
@@ -27,17 +46,18 @@ from _vscode_pyprof.collector.session import CollectorSession
 from _vscode_pyprof.collector.store.session_clock import SessionClock
 from _vscode_pyprof.collector.store.stack_table import StackTable
 from _vscode_pyprof.collector.store.store import Store
-from _vscode_pyprof.wire import JsonLines, JsonObject
+from _vscode_pyprof.wire import JsonObject, LineBuffer, WireDecoder, WireEncoder
 from tests.unit.json_view import JsonView
 
 
 class TestCollectorSession(unittest.TestCase):
     def setUp(self) -> None:
         self.output = io.BytesIO()
-        self.rpc = RpcServer(io.BytesIO(), self.output)
+        encoder = WireEncoder()
+        self.rpc = RpcServer(io.BytesIO(), self.output, encoder, WireDecoder(FROM_EXTENSION))
         clock = SessionClock()
         self.store = Store(clock, StackTable(FrameClassifier.for_running_interpreter()))
-        self.agent_server = AgentServer()
+        self.agent_server = AgentServer(encoder, WireDecoder(FROM_AGENT))
         self.addCleanup(self.agent_server.close)
         self.injector = AgentInjector()
         self.sampler_factory = SamplerFactory(self.store, clock, ProcessStatsReaderFactory())
@@ -50,24 +70,19 @@ class TestCollectorSession(unittest.TestCase):
             sampler_factory=self.sampler_factory,
             snapshot_builder=MemorySnapshotBuilder(self.store, clock, FuncResolver()),
             profile_writer=ProfileWriter(),
+            encoder=encoder,
         )
         self.session.start()
-        self._next_id = 0
 
     # ---------------------------------------------------------------- helpers
-    def messages(self) -> list[JsonView]:
-        return [JsonView.of(json.loads(line)) for line in self.output.getvalue().splitlines()]
-
-    def call(self, method: str, params: JsonObject | None = None) -> JsonView:
-        """Send one request and return its response."""
-        self._next_id += 1
-        self.rpc.handle({"id": self._next_id, "method": method, "params": params or {}})
-        responses = [m for m in self.messages() if m.get_raw("id") == self._next_id]
-        self.assertEqual(len(responses), 1, msg=f"no response to {method}")
-        return responses[0]
-
-    def notifications(self, method: str) -> list[JsonView]:
-        return [m.get_object("params") for m in self.messages() if m.get_raw("method") == method]
+    def notifications(self, notification_type: str) -> list[JsonObject]:
+        """The notifications of one type the session wrote, without their ``type``."""
+        messages = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        return [
+            {key: value for key, value in message.items() if key != "type"}
+            for message in messages
+            if message["type"] == notification_type
+        ]
 
     def connect_agent(self) -> AgentConnection:
         """A real connection object on a mocked socket, registered without starting a sampler."""
@@ -76,51 +91,63 @@ class TestCollectorSession(unittest.TestCase):
             MagicMock(),
             AgentHello("token", 4242, "python", ["app.py"], "/work", "3.15.2", []),
             self.session,
-            JsonLines(),
+            LineBuffer(),
+            WireEncoder(),
+            WireDecoder(FROM_AGENT),
         )
         self.session.on_agent_hello(connection)
         return connection
 
     # ------------------------------------------------------------------ tests
-    def test_initialize_returns_agent_address_and_protocol(self) -> None:
-        result = self.call("initialize", {"options": {"rateHz": 200}}).get_object("result")
+    def test_initialize_returns_agent_address_options_and_protocol(self) -> None:
+        options = CollectorOptions(rate_hz=200, tracemalloc=True, tracemalloc_frames=4)
 
-        self.assertEqual(result.get_str("agentAddress"), self.agent_server.address)
-        self.assertEqual(result.get_int("protocol"), 1)
-        self.assertEqual(result.get_int("pid"), os.getpid())
+        result = self.session.run(requests.Initialize(options))
+
+        assert isinstance(result, InitializeResult)
+        self.assertEqual(
+            (result.agent_address, result.protocol, result.pid),
+            (self.agent_server.address, PROTOCOL_VERSION, os.getpid()),
+        )
+        self.assertEqual(
+            WireDecoder(TO_AGENT).decode(result.agent_options), AgentOptions(tracemalloc=True, tracemalloc_frames=4)
+        )
 
     def test_initialize_stores_options_in_profile_meta(self) -> None:
-        self.call("initialize", {"options": {"rateHz": 200}, "label": "app.py"})
+        self.session.run(requests.Initialize(CollectorOptions(rate_hz=200), label="app.py"))
 
         meta = JsonView(self.store.full()).get_object("meta")
 
         self.assertEqual(meta.get_object("options").get_int("rateHz"), 200)
         self.assertEqual(meta.get_str("label"), "app.py")
 
-    def test_attach_when_process_cannot_be_read_returns_error(self) -> None:
+    def test_attach_when_process_cannot_be_read_raises_rpc_error(self) -> None:
         self.sampler_factory.create = MagicMock(side_effect=TachyonError("Process 1 does not exist"))
 
-        response = self.call("attach", {"pid": 1})
-
-        self.assertEqual(response.get_object("error").get_str("message"), "Process 1 does not exist")
-
-    def test_attach_without_pid_returns_error(self) -> None:
-        response = self.call("attach", {})
-
-        self.assertEqual(response.get_object("error").get_str("type"), "WireError")
+        with self.assertRaisesRegex(RpcError, "Process 1 does not exist"):
+            self.session.run(requests.Attach(pid=1))
 
     def test_attach_when_injection_fails_still_reports_sampling(self) -> None:
         sampler = create_autospec(Sampler, instance=True, pid=77)
         self.sampler_factory.create = MagicMock(return_value=sampler)
         self.injector.inject = MagicMock(side_effect=AgentInjectionError("remote debugging disabled"))
 
-        result = self.call("attach", {"pid": 77}).get_object("result")
+        result = self.session.run(requests.Attach(pid=77))
 
-        self.assertEqual(
-            (result.get_int("pid"), result.get_bool("injected"), result.get_str("injectError")),
-            (77, False, "remote debugging disabled"),
-        )
-        self.assertEqual(self.notifications("state")[0].to_dict(), {"state": "running", "pid": 77})
+        self.assertEqual(result, AttachResult(77, False, "remote debugging disabled"))
+        self.assertEqual(self.notifications("StateChanged"), [{"state": "running", "pid": 77, "reason": None}])
+
+    def test_attach_injects_agent_with_the_session_options(self) -> None:
+        sampler = create_autospec(Sampler, instance=True, pid=77)
+        self.sampler_factory.create = MagicMock(return_value=sampler)
+        inject = MagicMock()
+        self.injector.inject = inject
+        self.session.run(requests.Initialize(CollectorOptions(asyncio_debug=True)))
+
+        self.session.run(requests.Attach(pid=77))
+
+        options = WireDecoder(TO_AGENT).decode(inject.call_args.args[2])
+        self.assertEqual(options, AgentOptions(asyncio_debug=True))
 
     def test_attach_with_inject_disabled_does_not_inject(self) -> None:
         sampler = create_autospec(Sampler, instance=True, pid=77)
@@ -128,76 +155,63 @@ class TestCollectorSession(unittest.TestCase):
         inject = MagicMock()
         self.injector.inject = inject
 
-        self.call("attach", {"pid": 77, "inject": False})
+        self.session.run(requests.Attach(pid=77, inject=False))
 
         inject.assert_not_called()
 
-    def test_snapshot_without_agent_returns_explanatory_error(self) -> None:
-        response = self.call("snapshot")
+    def test_take_snapshot_without_agent_raises_explanatory_rpc_error(self) -> None:
+        with self.assertRaisesRegex(RpcError, "in-process agent is not connected"):
+            self.session.run(requests.TakeSnapshot())
 
-        self.assertIn("in-process agent is not connected", response.get_object("error").get_str("message"))
-
-    def test_snapshot_with_agent_stores_resolved_allocation_sites(self) -> None:
+    def test_take_snapshot_with_agent_stores_resolved_allocation_sites(self) -> None:
         connection = self.connect_agent()
-        reply = {
-            "t": 0.0,
-            "totalSize": 300,
-            "totalCount": 3,
-            "otherSize": 0,
-            "otherCount": 0,
-            "traced": 400,
-            "peak": 500,
-            "takeMs": 1.0,
-            "top": [[[[__file__, 1]], 300, 3]],
-        }
-        connection.request = MagicMock(return_value=HeapSnapshot.from_wire(reply))
+        heap = HeapSnapshot(0.0, 300, 3, 0, 0, 400, 500, 1.0, [Allocation([SourceLine(__file__, 1)], 300, 3)])
+        connection.request = MagicMock(return_value=heap)
 
-        result = self.call("snapshot", {"label": "A"}).get_object("result")
+        result = self.session.run(requests.TakeSnapshot(label="A"))
 
         snapshot = JsonView.of(JsonView(self.store.full()).get_list("snapshots")[0])
-        self.assertEqual((result.get_int("id"), result.get_int("entries")), (1, 1))
+        self.assertEqual(result, SnapshotResult(snapshot_id=1, total_size=300, entries=1))
         self.assertEqual((snapshot.get_str("label"), snapshot.get_int("totalSize")), ("A", 300))
         self.assertEqual(snapshot.get_list("entries"), [[0, 300, 3]])
 
-    def test_tracemalloc_enable_asks_agent_to_start_tracing(self) -> None:
+    def test_set_tracemalloc_enable_asks_agent_to_start_tracing(self) -> None:
         connection = self.connect_agent()
         request = MagicMock(return_value=TracingStatus(True, 8))
         connection.request = request
 
-        self.call("tracemalloc", {"enabled": True, "frames": 8})
+        self.session.run(requests.SetTracemalloc(enabled=True, frames=8))
 
-        request.assert_called_once_with(StartTracing(8), TracingStatus, 60.0)
+        request.assert_called_once_with(commands.StartTracing(8), TracingStatus, 60.0)
 
-    def test_asyncio_debug_passes_slow_callback_threshold_to_agent(self) -> None:
+    def test_set_asyncio_debug_passes_slow_callback_threshold_to_agent(self) -> None:
         connection = self.connect_agent()
         request = MagicMock(return_value=AsyncioDebugStatus(True, 1))
         connection.request = request
 
-        self.call("asyncioDebug", {"enabled": True, "slowMs": 50})
+        self.session.run(requests.SetAsyncioDebug(enabled=True, slow_ms=50))
 
-        request.assert_called_once_with(SetAsyncioDebug(True, 50.0), AsyncioDebugStatus, 60.0)
+        request.assert_called_once_with(commands.SetAsyncioDebug(True, 50), AsyncioDebugStatus, 60.0)
 
-    def test_asyncio_debug_without_threshold_sends_the_session_one(self) -> None:
+    def test_set_asyncio_debug_without_threshold_sends_the_session_one(self) -> None:
         connection = self.connect_agent()
         request = MagicMock(return_value=AsyncioDebugStatus(True, 1))
         connection.request = request
-        self.call("initialize", {"options": {"slowCallbackMs": 30}})
+        self.session.run(requests.Initialize(CollectorOptions(slow_callback_ms=30)))
 
-        self.call("asyncioDebug", {"enabled": True})
+        self.session.run(requests.SetAsyncioDebug(enabled=True))
 
-        request.assert_called_once_with(SetAsyncioDebug(True, 30.0), AsyncioDebugStatus, 60.0)
+        request.assert_called_once_with(commands.SetAsyncioDebug(True, 30.0), AsyncioDebugStatus, 60.0)
 
     def test_agent_hello_notifies_extension(self) -> None:
         self.connect_agent()
 
-        agent = self.notifications("agent")[0]
-
-        self.assertEqual((agent.get_bool("connected"), agent.get_int("pid")), (True, 4242))
+        self.assertEqual(self.notifications("AgentConnected"), [{"pid": 4242, "argv": ["app.py"], "cwd": "/work"}])
 
     def test_agent_hello_when_sampling_cannot_start_reports_error(self) -> None:
         self.connect_agent()
 
-        self.assertEqual(self.notifications("error")[0].get_str("message"), "no such process")
+        self.assertEqual(self.notifications("ErrorOccurred"), [{"message": "no such process"}])
 
     def test_agent_metrics_are_recorded_as_tracks_and_events(self) -> None:
         connection = self.connect_agent()
@@ -224,40 +238,45 @@ class TestCollectorSession(unittest.TestCase):
 
         self.session.on_agent_close(connection)
 
-        self.assertFalse(self.notifications("agent")[-1].get_bool("connected"))
+        self.assertEqual(self.notifications("AgentDisconnected"), [{}])
 
     def test_mark_then_save_writes_marker_to_profile_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "nested", "run.pyprof")
-            self.call("mark", {"name": "deploy"})
+            self.session.run(requests.Mark(name="deploy"))
 
-            result = self.call("save", {"path": path}).get_object("result")
+            result = self.session.run(requests.Save(path))
 
             with gzip.open(path, "rt", encoding="utf-8") as f:
                 profile = JsonView.of(json.load(f))
-        self.assertEqual(result.get_str("path"), path)
+            self.assertEqual(result, SaveResult(path, os.path.getsize(path)))
         self.assertEqual(profile.get_str("format"), "pyprof")
         self.assertEqual([m[1] for m in profile.get_list("markers") if isinstance(m, list)], ["deploy"])
 
     def test_stop_notifies_stopped_state(self) -> None:
-        self.call("stop", {"reason": "user"})
+        self.session.run(requests.Stop(reason="user"))
 
-        self.assertEqual(self.notifications("state")[-1].to_dict(), {"state": "stopped", "reason": "user"})
+        self.assertEqual(self.notifications("StateChanged")[-1], {"state": "stopped", "pid": None, "reason": "user"})
 
-    def test_status_reports_idle_state_before_attach(self) -> None:
-        result = self.call("status").get_object("result")
+    def test_get_status_reports_idle_state_before_attach(self) -> None:
+        result = self.session.run(requests.GetStatus())
 
-        self.assertEqual((result.get_str("state"), result.get_bool("agent")), ("idle", False))
+        assert isinstance(result, StatusResult)
+        self.assertEqual((result.state, result.agent), ("idle", False))
+
+    def test_run_with_unknown_request_raises_rpc_error(self) -> None:
+        with self.assertRaisesRegex(RpcError, "unknown request AgentOptions"):
+            self.session.run(AgentOptions())
 
     def test_on_target_exit_notifies_exited_state(self) -> None:
         self.session.on_target_exit(StopReason.EXITED)
 
-        self.assertEqual(self.notifications("state")[-1].to_dict(), {"state": "exited", "reason": "exited"})
+        self.assertEqual(self.notifications("StateChanged")[-1], {"state": "exited", "pid": None, "reason": "exited"})
 
     def test_on_children_notifies_child_pids(self) -> None:
         self.session.on_children([11, 12])
 
-        self.assertEqual(self.notifications("children")[0].get_list("pids"), [11, 12])
+        self.assertEqual(self.notifications("ChildrenFound"), [{"pids": [11, 12]}])
 
 
 if __name__ == "__main__":

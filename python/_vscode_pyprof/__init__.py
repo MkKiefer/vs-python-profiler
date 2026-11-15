@@ -8,5 +8,5 @@ it can never collide with a user's own modules when it is temporarily placed on
 import os
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MIN_PYTHON = (3, 15)

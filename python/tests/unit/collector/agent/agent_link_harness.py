@@ -5,12 +5,12 @@ import socket
 import threading
 import unittest
 
-from _vscode_pyprof.agent_protocol.commands import CommandCall
+from _vscode_pyprof.agent_protocol.messages import FROM_AGENT, TO_AGENT
 from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
 from _vscode_pyprof.collector.agent.connection import AgentConnection
 from _vscode_pyprof.collector.agent.listener import AgentListener
 from _vscode_pyprof.collector.agent.server import AgentServer
-from _vscode_pyprof.wire import JsonObject
+from _vscode_pyprof.wire import JsonObject, Request, WireDecoder, WireEncoder
 
 
 class RecordingListener(AgentListener):
@@ -40,6 +40,7 @@ class FakeAgent:
         host, port, self.token = address.rsplit(":", 2)
         self._socket = socket.create_connection((host, int(port)), timeout=5)
         self._reader = self._socket.makefile("rb")
+        self._decoder = WireDecoder(TO_AGENT)
 
     def send(self, message: JsonObject) -> None:
         self._socket.sendall((json.dumps(message) + "\n").encode())
@@ -47,17 +48,21 @@ class FakeAgent:
     def hello(self, token: str | None = None) -> None:
         self.send(
             {
-                "type": "hello",
+                "type": "AgentHello",
                 "token": token or self.token,
                 "pid": 4242,
+                "executable": "/usr/bin/python3.15",
                 "argv": ["app.py"],
                 "cwd": "/work",
+                "version": "3.15.2",
                 "threads": [],
             }
         )
 
-    def read(self) -> CommandCall:
-        return CommandCall.from_wire(json.loads(self._reader.readline()))
+    def read(self) -> Request:
+        request = self._decoder.decode(self._reader.readline())
+        assert isinstance(request, Request)
+        return request
 
     def read_is_end_of_stream(self) -> bool:
         return self._reader.readline() == b""
@@ -70,7 +75,7 @@ class FakeAgent:
 class AgentLinkTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.listener = RecordingListener()
-        self.server = AgentServer()
+        self.server = AgentServer(WireEncoder(), WireDecoder(FROM_AGENT))
         self.addCleanup(self.server.close)
         self.server.start(self.listener)
         self.addCleanup(self.close_accepted_connection)

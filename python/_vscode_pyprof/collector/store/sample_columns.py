@@ -25,7 +25,7 @@ class SampleColumns:
         self._stack.append(stack)
         self._status.append(status)
 
-    def to_wire(self, *, new_only: bool) -> JsonObject:
+    def to_profile(self, *, new_only: bool) -> JsonObject:
         """All samples, or with ``new_only`` those appended since the previous ``new_only`` call."""
         return {
             "t": self._t.rows(new_only=new_only),

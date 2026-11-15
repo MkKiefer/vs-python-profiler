@@ -1,9 +1,14 @@
-/** JSON-lines RPC client for the Python collector process. */
+/** Client for the Python collector process: one JSON message per line over stdio (see `shared/protocol.ts`). */
 import * as vscode from 'vscode';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as readline from 'node:readline';
 import { COLLECTOR_BOOT } from './paths';
-import type { CollectorNotification, CollectorRequests } from '../shared/protocol';
+import type {
+  CollectorNotification,
+  CollectorRequest,
+  CollectorRequests,
+  CollectorRequestType,
+} from '../shared/protocol';
 
 export class RpcFailure extends Error {}
 
@@ -13,12 +18,13 @@ interface Pending {
   timer: NodeJS.Timeout;
 }
 
-const NOTIFICATION_METHODS: ReadonlySet<string> = new Set<CollectorNotification['method']>([
-  'delta',
-  'state',
-  'agent',
-  'children',
-  'error',
+const NOTIFICATION_TYPES: ReadonlySet<string> = new Set<CollectorNotification['type']>([
+  'Delta',
+  'StateChanged',
+  'AgentConnected',
+  'AgentDisconnected',
+  'ChildrenFound',
+  'ErrorOccurred',
 ]);
 const STDERR_TAIL_LINES = 30;
 const KILL_GRACE_MS = 1000;
@@ -68,21 +74,23 @@ export class CollectorClient implements vscode.Disposable {
     });
   }
 
-  request<M extends keyof CollectorRequests>(
-    method: M,
-    params: CollectorRequests[M]['params'],
+  request<T extends CollectorRequestType>(
+    type: T,
+    params: CollectorRequests[T]['params'],
     timeoutMs = 60_000,
-  ): Promise<CollectorRequests[M]['result']> {
+  ): Promise<CollectorRequests[T]['result']> {
     const stdin = this.proc?.stdin;
     if (!stdin || !this.running) return Promise.reject(new RpcFailure('collector is not running'));
     const id = this.nextId++;
-    return new Promise<CollectorRequests[M]['result']>((resolve, reject) => {
+    const request: CollectorRequest<T> = { type: 'Request', id, body: { type, ...params } };
+    return new Promise<CollectorRequests[T]['result']>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new RpcFailure(`collector timed out on ${method}`));
+        reject(new RpcFailure(`collector timed out on ${type}`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      stdin.write(JSON.stringify({ id, method, params }) + '\n');
+      // the result's shape is the collector's side of the contract in shared/protocol.ts
+      this.pending.set(id, { resolve: (value) => resolve(value as CollectorRequests[T]['result']), reject, timer });
+      stdin.write(JSON.stringify(request) + '\n');
     });
   }
 
@@ -90,7 +98,7 @@ export class CollectorClient implements vscode.Disposable {
   async shutdown(): Promise<void> {
     if (!this.running) return;
     try {
-      await this.request('shutdown', {}, 5000);
+      await this.request('Shutdown', {}, 5000);
     } catch {
       /* it is going away either way */
     }
@@ -116,9 +124,9 @@ export class CollectorClient implements vscode.Disposable {
       return;
     }
     if (!isRecord(message)) return;
-    if (typeof message.id === 'number') {
+    if (message.type === 'Response' && typeof message.id === 'number') {
       this.onResponse(message.id, message);
-    } else if (typeof message.method === 'string' && NOTIFICATION_METHODS.has(message.method)) {
+    } else if (typeof message.type === 'string' && NOTIFICATION_TYPES.has(message.type)) {
       // shape is the collector's side of the contract in shared/protocol.ts
       this.notifications.fire(message as unknown as CollectorNotification);
     }
@@ -129,7 +137,7 @@ export class CollectorClient implements vscode.Disposable {
     if (!pending) return;
     this.pending.delete(id);
     clearTimeout(pending.timer);
-    if (isRecord(message.error)) pending.reject(new RpcFailure(String(message.error.message)));
+    if (typeof message.error === 'string') pending.reject(new RpcFailure(message.error));
     else pending.resolve(message.result);
   }
 

@@ -1,82 +1,51 @@
 """What the collector tells the extension without being asked.
 
-Mirror of ``CollectorNotification`` in ``src/shared/protocol.ts``. The ``delta``
-notification is not here: its payload is ``Store.delta()``.
+Mirror of ``CollectorNotification`` in ``src/shared/protocol.ts``; the class name is the ``"type"``.
 """
 
-from abc import abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar
 
-from _vscode_pyprof.collector.protocol import RpcNotification, SessionState
-from _vscode_pyprof.wire import JsonObject, WireWritable
-
-
-class Notification(WireWritable):
-    """A message with a fixed notification name."""
-
-    __slots__ = ()
-
-    method: ClassVar[RpcNotification]
-
-    @abstractmethod
-    def to_wire(self) -> JsonObject:
-        """The notification's ``params``."""
+from _vscode_pyprof.collector.protocol import SessionState
+from _vscode_pyprof.wire import JsonObject
 
 
 @dataclass(frozen=True, slots=True)
-class StateChanged(Notification):
-    method = RpcNotification.STATE
+class Delta:
+    """What the profile recorded since the previous delta (``Store.delta()``)."""
 
+    data: JsonObject
+
+
+@dataclass(frozen=True, slots=True)
+class StateChanged:
     state: SessionState
     pid: int | None = None
     """The sampled process, when sampling starts."""
     reason: str | None = None
     """A ``StopReason`` value or the extension's own reason, when sampling ends."""
 
-    def to_wire(self) -> JsonObject:
-        return self._omit_none({"state": self.state, "pid": self.pid, "reason": self.reason})
-
 
 @dataclass(frozen=True, slots=True)
-class AgentConnected(Notification):
-    method = RpcNotification.AGENT
-
+class AgentConnected:
     pid: int
     argv: list[str]
     cwd: str | None
 
-    def to_wire(self) -> JsonObject:
-        return self._omit_none({"connected": True, "pid": self.pid, "argv": self.argv, "cwd": self.cwd})
+
+@dataclass(frozen=True, slots=True)
+class AgentDisconnected:
+    pass
 
 
 @dataclass(frozen=True, slots=True)
-class AgentDisconnected(Notification):
-    method = RpcNotification.AGENT
-
-    def to_wire(self) -> JsonObject:
-        return {"connected": False}
-
-
-@dataclass(frozen=True, slots=True)
-class ChildrenFound(Notification):
+class ChildrenFound:
     """Python child processes of the target that were not known before."""
-
-    method = RpcNotification.CHILDREN
 
     pids: list[int]
 
-    def to_wire(self) -> JsonObject:
-        return {"pids": self.pids}
-
 
 @dataclass(frozen=True, slots=True)
-class ErrorOccurred(Notification):
+class ErrorOccurred:
     """A failure outside any request, e.g. sampling could not start for a launched program."""
 
-    method = RpcNotification.ERROR
-
     message: str
-
-    def to_wire(self) -> JsonObject:
-        return {"message": self.message}

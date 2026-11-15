@@ -97,26 +97,29 @@ export class Session implements vscode.Disposable {
   }
 
   private onNotification(notification: CollectorNotification): void {
-    switch (notification.method) {
-      case 'delta':
-        this.model.applyDelta(notification.params);
-        this.delta.fire(notification.params);
+    switch (notification.type) {
+      case 'Delta':
+        this.model.applyDelta(notification.data);
+        this.delta.fire(notification.data);
         break;
-      case 'state':
-        if (notification.params.pid) this.pid = notification.params.pid;
+      case 'StateChanged':
+        if (notification.pid) this.pid = notification.pid;
         // a finished session keeps its final state (the collector also reports
         // "stopped" when it is merely shut down after the target exited)
-        if (this.live) this.setState(notification.params.state);
+        if (this.live) this.setState(notification.state);
         break;
-      case 'agent':
-        this.updateCapabilities({ agent: notification.params.connected });
+      case 'AgentConnected':
+        this.updateCapabilities({ agent: true });
         break;
-      case 'children':
-        this.children.fire(notification.params.pids);
+      case 'AgentDisconnected':
+        this.updateCapabilities({ agent: false });
         break;
-      case 'error':
-        this.lastError = notification.params.message;
-        void vscode.window.showErrorMessage(`Python Profiler: ${notification.params.message}`);
+      case 'ChildrenFound':
+        this.children.fire(notification.pids);
+        break;
+      case 'ErrorOccurred':
+        this.lastError = notification.message;
+        void vscode.window.showErrorMessage(`Python Profiler: ${notification.message}`);
         break;
     }
   }

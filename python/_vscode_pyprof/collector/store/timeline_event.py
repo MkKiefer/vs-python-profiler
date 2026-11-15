@@ -3,11 +3,11 @@
 from dataclasses import dataclass, field
 
 from _vscode_pyprof.agent_protocol.metrics import EventDetails
-from _vscode_pyprof.wire import JsonObject, WireWritable
+from _vscode_pyprof.wire import JsonObject
 
 
 @dataclass(frozen=True, slots=True)
-class TimelineEvent(WireWritable):
+class TimelineEvent:
     t: float
     """Session milliseconds."""
     kind: str
@@ -15,7 +15,16 @@ class TimelineEvent(WireWritable):
     message: str
     details: EventDetails = field(default_factory=EventDetails)
 
-    def to_wire(self) -> JsonObject:
-        wire = self.details.to_wire()
-        wire.update(t=self.t, kind=self.kind, message=self.message)
-        return wire
+    def to_profile(self) -> JsonObject:
+        """The event with its known details next to ``t``, ``kind`` and ``message``."""
+        details = self.details
+        known: JsonObject = {
+            "thread": details.thread,
+            "seconds": details.seconds,
+            "handle": details.handle,
+            "file": details.file,
+            "line": details.line,
+        }
+        event: JsonObject = {key: value for key, value in known.items() if value is not None}
+        event.update(t=self.t, kind=self.kind, message=self.message)
+        return event

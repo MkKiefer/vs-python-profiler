@@ -101,7 +101,7 @@ export class SessionManager implements vscode.Disposable {
         env: {
           ...spec.env,
           PYPROF_AGENT: info.agentAddress,
-          PYPROF_OPTIONS: JSON.stringify(options),
+          PYPROF_OPTIONS: info.agentOptions,
           PYTHONUNBUFFERED: spec.env?.PYTHONUNBUFFERED ?? '1',
         },
         iconPath: new vscode.ThemeIcon('flame'),
@@ -119,7 +119,7 @@ export class SessionManager implements vscode.Disposable {
     const { inject = true, ...options } = overrides;
     await this.guardStartup(session, async () => {
       const { client } = await this.startCollector(session, python.executable, settings.collectorOptions(undefined, options));
-      const result = await client.request('attach', { pid, inject }, 30_000);
+      const result = await client.request('Attach', { pid, inject }, 30_000);
       session.pid = result.pid;
       if (result.injectError) {
         void vscode.window.showWarningMessage(
@@ -140,7 +140,7 @@ export class SessionManager implements vscode.Disposable {
     const client = new CollectorClient(python, this.paths.python, this.log);
     session.attachClient(client);
     client.start();
-    const info = await client.request('initialize', { options, label: session.label }, 30_000);
+    const info = await client.request('Initialize', { options: { type: 'CollectorOptions', ...options }, label: session.label }, 30_000);
     session.updateCapabilities({ tracemalloc: !!options.tracemalloc, asyncioDebug: !!options.asyncioDebug });
     return { client, info };
   }
@@ -175,7 +175,7 @@ export class SessionManager implements vscode.Disposable {
   // ------------------------------------------------------------- stopping
   async stop(session: Session, terminate = false): Promise<void> {
     try {
-      await session.client?.request('stop', { reason: 'user' }, 10_000);
+      await session.client?.request('Stop', { reason: 'user' }, 10_000);
     } catch (e) {
       this.log.warn(`stop failed: ${errorMessage(e)}`);
     }
@@ -211,7 +211,7 @@ export class SessionManager implements vscode.Disposable {
       if (settings.autoSave() && session.model.stats.samples > 0 && !session.filePath) {
         const stamp = new Date(session.startedAt).toISOString().replace(/[:.]/g, '-');
         const file = path.join(this.storageDir, `${stamp}_${profileFileStem(session.label)}.${PROFILE_EXTENSION}`);
-        await client.request('save', { path: file }, 60_000);
+        await client.request('Save', { path: file }, 60_000);
         session.filePath = file;
       }
     } catch (e) {
@@ -226,7 +226,7 @@ export class SessionManager implements vscode.Disposable {
   // ---------------------------------------------------------------- files
   async saveAs(session: Session, target: string): Promise<void> {
     const client = session.client;
-    if (client) await client.request('save', { path: target }, 60_000);
+    if (client) await client.request('Save', { path: target }, 60_000);
     else await writeProfile(target, session.model.toDelta());
   }
 

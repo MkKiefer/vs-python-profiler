@@ -1,40 +1,13 @@
-"""Names of the RPC between the extension and the collector.
+"""Values with a fixed set of names in the messages between the extension and the collector.
 
-Mirror of ``CollectorRequests`` and ``CollectorNotification`` in
-``src/shared/protocol.ts``; a name added on one side must be added on the other.
+Mirror of the matching string unions in ``src/shared/protocol.ts``.
 """
 
 from enum import StrEnum
 
 
-class RpcMethod(StrEnum):
-    """Requests the extension sends."""
-
-    INITIALIZE = "initialize"
-    ATTACH = "attach"
-    STOP = "stop"
-    STATUS = "status"
-    TRACEMALLOC = "tracemalloc"
-    SNAPSHOT = "snapshot"
-    OBJECT_COUNTS = "objectCounts"
-    ASYNCIO_DEBUG = "asyncioDebug"
-    MARK = "mark"
-    SAVE = "save"
-    SHUTDOWN = "shutdown"
-
-
-class RpcNotification(StrEnum):
-    """Notifications the collector pushes without being asked."""
-
-    DELTA = "delta"
-    STATE = "state"
-    AGENT = "agent"
-    CHILDREN = "children"
-    ERROR = "error"
-
-
 class SessionState(StrEnum):
-    """``state`` of a ``STATE`` notification and of the ``STATUS`` result."""
+    """``state`` of a ``StateChanged`` notification and of the ``GetStatus`` result."""
 
     IDLE = "idle"
     RUNNING = "running"
@@ -43,7 +16,7 @@ class SessionState(StrEnum):
 
 
 class StopReason(StrEnum):
-    """Why profiling ended (``reason`` of a ``STATE`` notification); the extension may send its own."""
+    """Why profiling ended (``reason`` of a ``StateChanged`` notification); the extension may send its own."""
 
     USER = "user"
     SHUTDOWN = "shutdown"

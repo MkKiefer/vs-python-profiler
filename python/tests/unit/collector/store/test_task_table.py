@@ -45,7 +45,7 @@ class TestTaskRecord(TaskTestCase):
         )
 
         self.assertDictEqual(
-            record.to_wire(),
+            record.to_profile(),
             {
                 "id": 5,
                 "name": "worker",

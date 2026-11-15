@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from _vscode_pyprof.wire import JsonObject, WireWritable
+from _vscode_pyprof.wire import JsonObject
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +15,7 @@ class AllocationSite:
 
 
 @dataclass(frozen=True, slots=True)
-class MemorySnapshot(WireWritable):
+class MemorySnapshot:
     """A tracemalloc snapshot grouped by call stack.
 
     ``sites`` holds the largest call stacks; ``other_size``/``other_count`` sum
@@ -34,7 +34,7 @@ class MemorySnapshot(WireWritable):
     take_ms: float | None
     sites: tuple[AllocationSite, ...]
 
-    def to_wire(self) -> JsonObject:
+    def to_profile(self) -> JsonObject:
         return {
             "id": self.snapshot_id,
             "label": self.label,

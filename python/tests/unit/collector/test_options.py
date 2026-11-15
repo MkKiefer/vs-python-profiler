@@ -1,41 +1,29 @@
 import unittest
 
 from _vscode_pyprof.agent_protocol.options import AgentOptions
+from _vscode_pyprof.collector.messages import FROM_EXTENSION
 from _vscode_pyprof.collector.options import CollectorOptions
+from _vscode_pyprof.wire import WireDecoder, WireEncoder
 
 
 class TestCollectorOptions(unittest.TestCase):
-    def test_from_wire_with_empty_object_uses_defaults(self) -> None:
-        options = CollectorOptions.from_wire({})
+    def setUp(self) -> None:
+        self.decoder = WireDecoder(FROM_EXTENSION)
 
-        self.assertEqual(options, CollectorOptions())
+    def test_decode_without_keys_uses_defaults(self) -> None:
+        self.assertEqual(self.decoder.decode('{"type": "CollectorOptions"}'), CollectorOptions())
 
-    def test_from_wire_with_null_value_keeps_default(self) -> None:
-        options = CollectorOptions.from_wire({"rateHz": None})
-
-        self.assertEqual(options.rate_hz, 1000)
-
-    def test_from_wire_reads_camel_case_keys(self) -> None:
-        raw = {"rateHz": 250, "stripLauncher": True, "slowCallbackMs": 20, "tracemallocFrames": 4}
-
-        options = CollectorOptions.from_wire(raw)
+    def test_decode_reads_camel_case_keys(self) -> None:
+        line = '{"type": "CollectorOptions", "rateHz": 250, "stripLauncher": true, "tracemallocFrames": 4}'
 
         self.assertEqual(
-            (options.rate_hz, options.strip_launcher, options.slow_callback_ms, options.tracemalloc_frames),
-            (250, True, 20.0, 4),
+            self.decoder.decode(line), CollectorOptions(rate_hz=250, strip_launcher=True, tracemalloc_frames=4)
         )
 
-    def test_from_wire_with_zero_rate_clamps_to_one(self) -> None:
-        options = CollectorOptions.from_wire({"rateHz": 0})
-
-        self.assertEqual(options.rate_hz, 1)
-
-    def test_to_wire_round_trips_through_from_wire(self) -> None:
+    def test_encode_round_trips_through_decode(self) -> None:
         options = CollectorOptions(rate_hz=333, native=True, blocking=True, asyncio_debug=True)
 
-        restored = CollectorOptions.from_wire(options.to_wire())
-
-        self.assertEqual(restored, options)
+        self.assertEqual(self.decoder.decode(WireEncoder().encode(options)), options)
 
     def test_agent_options_contains_only_agent_settings(self) -> None:
         options = CollectorOptions(tracemalloc=True, tracemalloc_frames=8)

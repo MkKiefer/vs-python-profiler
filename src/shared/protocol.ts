@@ -1,7 +1,7 @@
 /**
  * Wire contracts between the three parts of the extension:
  *
- *   webview  ⇄  extension host  ⇄  collector (Python, JSON lines over stdio)
+ *   webview  ⇄  extension host  ⇄  collector (Python, one JSON object per line over stdio)
  *
  * Everything that crosses a process boundary is declared here so both ends
  * are checked against the same types.
@@ -68,6 +68,10 @@ export type CommandRequest = {
 }[WebviewCommand];
 
 // ──────────────────────────────────────────────────── extension ⇄ collector
+//
+// Every message is one JSON object per line whose `type` is the name of the
+// Python dataclass it is read into (`python/_vscode_pyprof/wire.py`); nested
+// dataclasses carry their `type` too. The collector writes `None` as `null`.
 
 export interface CollectorOptions {
   rateHz?: number;
@@ -86,6 +90,7 @@ export interface CollectorOptions {
 export type AttachOptions = CollectorOptions & { inject?: boolean };
 
 export interface InitializeResult {
+  type: 'InitializeResult';
   protocol: number;
   python: string;
   executable: string;
@@ -93,34 +98,64 @@ export interface InitializeResult {
   pid: number;
   /** `host:port:token` the in-process agent connects back to */
   agentAddress: string;
+  /** the agent's start options as one JSON line; passed to a launched program as `PYPROF_OPTIONS` */
+  agentOptions: string;
   packageDir: string;
-  features: { gcStats: boolean; remoteExec: boolean; asyncAware: boolean };
+  features: { type: 'Features'; gcStats: boolean; remoteExec: boolean; asyncAware: boolean };
 }
 
 export interface AttachResult {
+  type: 'AttachResult';
   pid: number;
   injected: boolean;
-  injectError?: string;
+  injectError: string | null;
 }
 
-/** Request/response pairs of the collector RPC (see `python/_vscode_pyprof/collector/session.py`; names mirrored in `collector/protocol.py`). */
+/**
+ * The requests of the collector (`python/_vscode_pyprof/collector/requests.py`): the key is
+ * the request's `type`, `params` its fields and `result` what the `Response` carries.
+ */
 export interface CollectorRequests {
-  initialize: { params: { options: CollectorOptions; label?: string }; result: InitializeResult };
-  attach: { params: { pid: number; inject: boolean }; result: AttachResult };
-  stop: { params: { reason?: string }; result: { ok: true } };
-  tracemalloc: { params: { enabled: boolean; frames?: number }; result: unknown };
-  snapshot: { params: { label?: string; limit?: number }; result: { id: number; totalSize: number; entries: number } };
-  objectCounts: { params: { limit?: number }; result: { t: number; counts: [string, number][] } };
-  asyncioDebug: { params: { enabled: boolean; slowMs?: number }; result: unknown };
-  mark: { params: { name: string }; result: { ok: true } };
-  save: { params: { path: string }; result: { path: string; bytes: number } };
-  shutdown: { params: Record<string, never>; result: { ok: true } };
+  Initialize: { params: { options: CollectorOptions & { type: 'CollectorOptions' }; label?: string }; result: InitializeResult };
+  Attach: { params: { pid: number; inject: boolean }; result: AttachResult };
+  Stop: { params: { reason?: string }; result: null };
+  GetStatus: { params: Record<string, never>; result: { type: 'StatusResult'; state: string; pid: number | null; agent: boolean } };
+  SetTracemalloc: { params: { enabled: boolean; frames?: number }; result: { type: 'TracingStatus'; tracing: boolean } };
+  TakeSnapshot: {
+    params: { label?: string; limit?: number };
+    result: { type: 'SnapshotResult'; snapshotId: number; totalSize: number; entries: number };
+  };
+  CountObjects: { params: { limit?: number }; result: { type: 'ObjectCounts'; t: number } };
+  SetAsyncioDebug: { params: { enabled: boolean; slowMs?: number }; result: { type: 'AsyncioDebugStatus'; enabled: boolean } };
+  Mark: { params: { name: string }; result: null };
+  Save: { params: { path: string }; result: { type: 'SaveResult'; path: string; sizeBytes: number } };
+  Shutdown: { params: Record<string, never>; result: null };
 }
 
-/** Notifications the collector pushes without being asked. */
+export type CollectorRequestType = keyof CollectorRequests;
+
+/** What the extension writes: one request, answered by the `CollectorResponse` with the same `id`. */
+export interface CollectorRequest<T extends CollectorRequestType = CollectorRequestType> {
+  type: 'Request';
+  id: number;
+  body: { type: T } & CollectorRequests[T]['params'];
+}
+
+export interface CollectorResponse {
+  type: 'Response';
+  id: number;
+  result: unknown;
+  error: string | null;
+}
+
+/** Notifications the collector pushes without being asked (`python/_vscode_pyprof/collector/notifications.py`). */
 export type CollectorNotification =
-  | { method: 'delta'; params: Delta }
-  | { method: 'state'; params: { state: 'running' | 'exited' | 'stopped'; pid?: number; reason?: string } }
-  | { method: 'agent'; params: { connected: boolean; pid?: number; argv?: string[]; cwd?: string } }
-  | { method: 'children'; params: { pids: number[] } }
-  | { method: 'error'; params: { message: string } };
+  | { type: 'Delta'; data: Delta }
+  | { type: 'StateChanged'; state: 'running' | 'exited' | 'stopped'; pid: number | null; reason: string | null }
+  | { type: 'AgentConnected'; pid: number; argv: string[]; cwd: string | null }
+  | { type: 'AgentDisconnected' }
+  | { type: 'ChildrenFound'; pids: number[] }
+  | { type: 'ErrorOccurred'; message: string };
+
+/** Everything the collector writes. */
+export type CollectorMessage = CollectorResponse | CollectorNotification;

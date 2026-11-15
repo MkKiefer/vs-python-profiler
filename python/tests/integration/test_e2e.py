@@ -54,13 +54,13 @@ class Client:
     def _read(self):
         for line in self.proc.stdout:
             msg = json.loads(line)
-            if "id" in msg:
+            if msg["type"] == "Response":
                 with self.cv:
                     self.responses[msg["id"]] = msg
                     self.cv.notify_all()
             else:
-                if msg["method"] == "delta":
-                    self._apply(msg["params"])
+                if msg["type"] == "Delta":
+                    self._apply(msg["data"])
                 self.notes.put(msg)
 
     def _apply(self, d):
@@ -82,33 +82,37 @@ class Client:
             assert 0 <= sid < len(m["stacks"]), sid
             m["sampleStacks"].add(sid)
 
-    def call(self, method, params=None, timeout=60):
+    def call(self, request_type, params=None, timeout=60):
         self.ids += 1
         mid = self.ids
-        self.proc.stdin.write((json.dumps({"id": mid, "method": method, "params": params or {}}) + "\n").encode())
+        request = {"type": "Request", "id": mid, "body": {"type": request_type, **(params or {})}}
+        self.proc.stdin.write((json.dumps(request) + "\n").encode())
         self.proc.stdin.flush()
         with self.cv:
             ok = self.cv.wait_for(lambda: mid in self.responses, timeout)
-        assert ok, f"timeout waiting for {method}"
+        assert ok, f"timeout waiting for {request_type}"
         r = self.responses.pop(mid)
-        if "error" in r:
-            raise RuntimeError(r["error"]["message"])
+        if r["error"] is not None:
+            raise RuntimeError(r["error"])
         return r["result"]
 
-    def wait_note(self, method, pred=lambda p: True, timeout=30):
+    def initialize(self, **options):
+        return self.call("Initialize", {"options": {"type": "CollectorOptions", **options}})
+
+    def wait_note(self, note_type, pred=lambda p: True, timeout=30):
         end = time.time() + timeout
         while time.time() < end:
             try:
                 msg = self.notes.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if msg["method"] == method and pred(msg["params"]):
-                return msg["params"]
-        raise AssertionError(f"no {method} notification")
+            if msg["type"] == note_type and pred(msg):
+                return msg
+        raise AssertionError(f"no {note_type} notification")
 
     def close(self):
         try:
-            self.call("shutdown", timeout=5)
+            self.call("Shutdown", timeout=5)
         except Exception:
             pass
         self.proc.wait(5)
@@ -117,11 +121,10 @@ class Client:
         return {f[1] for f in self.model["frames"]}
 
 
-def launch_target(client, info, app, *args, options=None):
+def launch_target(client, info, app, *args):
     env = dict(os.environ)
     env["PYPROF_AGENT"] = info["agentAddress"]
-    if options:
-        env["PYPROF_OPTIONS"] = json.dumps(options)
+    env["PYPROF_OPTIONS"] = info["agentOptions"]
     return subprocess.Popen(
         [
             sys.executable,
@@ -142,10 +145,10 @@ class E2E(unittest.TestCase):
     def test_launch_cpu(self):
         c = Client()
         try:
-            info = c.call("initialize", {"options": {"rateHz": 500, "stripLauncher": True}})
+            info = c.initialize(rateHz=500, stripLauncher=True)
             p = launch_target(c, info, "cpu_bound.py", "3")
-            c.wait_note("state", lambda s: s["state"] == "running")
-            c.wait_note("state", lambda s: s["state"] == "exited", timeout=30)
+            c.wait_note("StateChanged", lambda s: s["state"] == "running")
+            c.wait_note("StateChanged", lambda s: s["state"] == "exited", timeout=30)
             out, err = p.communicate(timeout=10)
             self.assertIn(b"done", out, err)
             time.sleep(0.4)
@@ -165,7 +168,7 @@ class E2E(unittest.TestCase):
             self.assertIn("rss", c.model["tracks"])
             with tempfile.TemporaryDirectory() as d:
                 path = os.path.join(d, "x.pyprof")
-                c.call("save", {"path": path})
+                c.call("Save", {"path": path})
                 with gzip.open(path, "rt") as f:
                     data = json.load(f)
                 self.assertEqual(data["format"], "pyprof")
@@ -176,19 +179,19 @@ class E2E(unittest.TestCase):
     def test_launch_memory_snapshots(self):
         c = Client()
         try:
-            info = c.call("initialize", {"options": {"rateHz": 200, "stripLauncher": True, "tracemalloc": True}})
-            p = launch_target(c, info, "leaky.py", "6", options={"tracemalloc": True})
-            c.wait_note("agent", lambda a: a["connected"])
+            info = c.initialize(rateHz=200, stripLauncher=True, tracemalloc=True)
+            p = launch_target(c, info, "leaky.py", "6")
+            c.wait_note("AgentConnected")
             time.sleep(1.5)
-            a = c.call("snapshot", {"label": "A"})
+            a = c.call("TakeSnapshot", {"label": "A"})
             time.sleep(1.5)
-            b = c.call("snapshot", {"label": "B"})
+            b = c.call("TakeSnapshot", {"label": "B"})
             self.assertGreater(b["totalSize"], a["totalSize"])
             time.sleep(0.4)
             before, after = (
                 {sid: size for sid, size, _count in snap["entries"]}
                 for snap in c.model["snapshots"]
-                if snap["id"] in (a["id"], b["id"])
+                if snap["id"] in (a["snapshotId"], b["snapshotId"])
             )
             top_sid = max(after, key=lambda sid: after[sid] - before.get(sid, 0))
             # walk the top growing stack: should end in Record.__init__ / handle_request
@@ -199,8 +202,8 @@ class E2E(unittest.TestCase):
                 names.append(c.model["frames"][fid][1])
                 sid = parent
             self.assertTrue({"handle_request", "Record.__init__"} & set(names), names)
-            counts = c.call("objectCounts")
-            self.assertTrue(any(n.endswith("Record") for n, _ in counts["counts"]))
+            counts = c.call("CountObjects")
+            self.assertTrue(any(count["typeName"].endswith("Record") for count in counts["counts"]))
             self.assertIn("traced", c.model["tracks"])
             p.wait(20)
         finally:
@@ -213,11 +216,11 @@ class E2E(unittest.TestCase):
         c = Client()
         try:
             time.sleep(0.5)
-            c.call("initialize", {"options": {"rateHz": 500}})
-            r = c.call("attach", {"pid": target.pid, "inject": True})
+            c.initialize(rateHz=500)
+            r = c.call("Attach", {"pid": target.pid, "inject": True})
             self.assertTrue(r["injected"], r)
-            c.wait_note("agent", lambda a: a["connected"], timeout=15)
-            c.call("asyncioDebug", {"enabled": True, "slowMs": 50})
+            c.wait_note("AgentConnected", timeout=15)
+            c.call("SetAsyncioDebug", {"enabled": True, "slowMs": 50})
             time.sleep(3.5)
             tasks = c.model["tasks"]
             self.assertTrue(any(t["name"].startswith("worker-") for t in tasks.values()), tasks)
@@ -227,7 +230,7 @@ class E2E(unittest.TestCase):
             kinds = {e["kind"] for e in c.model["events"]}
             self.assertIn("slow-callback", kinds)
             self.assertIn("slow_db_query", c.funcs())
-            c.call("stop", {})
+            c.call("Stop")
         finally:
             c.close()
             target.kill()
@@ -235,11 +238,11 @@ class E2E(unittest.TestCase):
     def test_blocking_mode_has_no_discarded_samples(self):
         c = Client()
         try:
-            info = c.call("initialize", {"options": {"rateHz": 300, "stripLauncher": True, "blocking": True}})
+            info = c.initialize(rateHz=300, stripLauncher=True, blocking=True)
             p = launch_target(c, info, "cpu_bound.py", "2")
-            c.wait_note("state", lambda s: s["state"] == "exited", timeout=30)
+            c.wait_note("StateChanged", lambda s: s["state"] == "exited", timeout=30)
             p.communicate(timeout=10)
-            st = c.call("status")["stats"]
+            st = c.call("GetStatus")["stats"]
             self.assertGreater(st["samples"], 100)
             self.assertLess(st["errors"] / st["samples"], 0.03, st)
         finally:

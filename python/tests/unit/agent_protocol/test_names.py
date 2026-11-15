@@ -1,26 +1,15 @@
 import json
 import unittest
 
-from _vscode_pyprof.agent_protocol.names import AgentCommand, AgentMessageType, EventKind
+from _vscode_pyprof.agent_protocol.names import EventKind
 
 
-class TestProtocolNames(unittest.TestCase):
-    def test_names_serialise_as_their_wire_value(self) -> None:
-        message = {
-            "type": AgentMessageType.RESULT,
-            "method": AgentCommand.OBJECT_COUNTS,
-            "kind": EventKind.SLOW_CALLBACK,
-        }
+class TestEventKind(unittest.TestCase):
+    def test_event_kind_serialises_as_its_wire_value(self) -> None:
+        self.assertEqual(json.dumps({"kind": EventKind.SLOW_CALLBACK}), '{"kind": "slow-callback"}')
 
-        self.assertEqual(
-            json.loads(json.dumps(message)), {"type": "result", "method": "object_counts", "kind": "slow-callback"}
-        )
-
-    def test_names_compare_equal_to_their_wire_value(self) -> None:
-        handlers: dict[str, int] = {AgentCommand.PING: 1}
-
-        self.assertEqual(AgentMessageType.HELLO, "hello")
-        self.assertEqual(handlers["ping"], 1)
+    def test_event_kind_compares_equal_to_its_wire_value(self) -> None:
+        self.assertEqual(EventKind.NEVER_AWAITED, "never-awaited")
 
 
 if __name__ == "__main__":

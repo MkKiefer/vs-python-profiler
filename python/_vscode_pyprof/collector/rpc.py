@@ -1,8 +1,8 @@
-"""Newline-delimited JSON-RPC over stdio between the extension and collector.
+"""Requests and notifications over stdio between the extension and the collector, one JSON line each.
 
-Request:      {"id": 1, "method": "attach", "params": {...}}
-Response:     {"id": 1, "result": {...}}  |  {"id": 1, "error": {"message": ...}}
-Notification: {"method": "delta", "params": {...}}            (no id)
+Extension → collector: ``{"type": "Request", "id": 1, "body": {"type": "Attach", "pid": 42}}``
+Collector → extension: ``{"type": "Response", "id": 1, "result": {...}, "error": null}``
+                       and notifications such as ``{"type": "StateChanged", "state": "running", ...}``
 """
 
 import json
@@ -10,30 +10,12 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import BinaryIO, Self
+from typing import BinaryIO
 
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireReadable, WireReader, WireWritable
+from _vscode_pyprof.wire import Request, Response, WireDecoder, WireEncoder, WireError
 
-type _Handler = Callable[[JsonObject], WireWritable]
-"""Reads the ``params`` of a request and returns its result."""
-
-
-@dataclass(frozen=True, slots=True)
-class RpcRequest(WireReadable):
-    """A request or notification; ``params`` is read by the handler of ``method``."""
-
-    method: str
-    id: object = None
-    """Any JSON value; ``None`` for a notification, which gets no response."""
-    params: JsonObject = field(default_factory=dict)
-
-    @classmethod
-    def from_wire(cls, raw: object, where: str = "$") -> Self:
-        message = WireReader.for_object(raw, where)
-        return cls(
-            method=message.get("method", str), id=message.value("id"), params=message.json_object_or("params", {})
-        )
+type RequestHandler = Callable[[object], object]
+"""Runs the body of one request and returns its result."""
 
 
 class RpcError(Exception):
@@ -41,65 +23,62 @@ class RpcError(Exception):
 
 
 class RpcServer:
-    """Serves requests from ``inp`` and writes responses/notifications to ``out``."""
+    """Serves requests from ``inp`` and writes responses and notifications to ``out``."""
 
-    def __init__(self, inp: BinaryIO, out: BinaryIO) -> None:
+    def __init__(self, inp: BinaryIO, out: BinaryIO, encoder: WireEncoder, decoder: WireDecoder) -> None:
+        """``decoder`` reads what the extension sends (``collector.messages.FROM_EXTENSION``)."""
         self._inp = inp
         self._out = out
+        self._encoder = encoder
+        self._decoder = decoder
         self._write_lock = threading.Lock()
-        self._handlers: dict[str, _Handler] = {}
         self._closed = threading.Event()
 
     @property
     def closed(self) -> bool:
         return self._closed.is_set()
 
-    def register[P: WireReadable](
-        self, method: str, params_type: type[P], handler: Callable[[P], WireWritable]
-    ) -> None:
-        """Serve ``method`` with ``handler``, which gets the request's ``params`` read as ``params_type``."""
-        self._handlers[method] = lambda params: handler(params_type.from_wire(params, "params"))
+    def notify(self, notification: object) -> None:
+        self._send(notification)
 
-    def notify(self, method: str, params: JsonObject) -> None:
-        self._send({"method": method, "params": params})
-
-    def serve(self) -> None:
-        """Dispatch requests until the input stream closes. Each request runs on its own thread."""
+    def serve(self, handler: RequestHandler) -> None:
+        """Answer requests with ``handler`` until the input stream closes. Each request runs on its own thread."""
         try:
-            for raw in self._inp:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    message = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(message, dict):
-                    threading.Thread(target=self.handle, args=(message,), daemon=True).start()
+            for line in self._inp:
+                if line.strip():
+                    threading.Thread(target=self._answer, args=(line, handler), daemon=True).start()
         finally:
             self._closed.set()
 
-    def handle(self, message: JsonObject) -> None:
-        """Run one request and write its response (notifications get none)."""
-        request_id = message.get("id")  # read first: a malformed request still gets its error response
+    def _answer(self, line: bytes, handler: RequestHandler) -> None:
         try:
-            request = RpcRequest.from_wire(message)
-            handler = self._handlers.get(request.method)
-            if handler is None:
-                raise RpcError(f"unknown method {request.method!r}")
-            result = handler(request.params).to_wire()
-        except Exception as error:
-            if not isinstance(error, (RpcError, WireError)):  # those are the caller's mistakes
-                traceback.print_exc(file=sys.stderr)
+            request = self._decoder.decode(line)
+            if not isinstance(request, Request):
+                raise WireError(f"expected a Request, got {type(request).__name__}")
+        except ValueError as error:  # the extension is broken; answer if the line names a request id
+            request_id = self._request_id(line)
             if request_id is not None:
-                detail: JsonObject = {"message": str(error) or type(error).__name__, "type": type(error).__name__}
-                self._send({"id": request_id, "error": detail})
+                self._send(Response(request_id, error=str(error)))
             return
-        if request_id is not None:
-            self._send({"id": request_id, "result": result})
+        try:
+            response = Response(request.id, result=handler(request.body))
+        except Exception as error:
+            if not isinstance(error, RpcError):  # an RpcError is the caller's mistake
+                traceback.print_exc(file=sys.stderr)
+            response = Response(request.id, error=str(error) or type(error).__name__)
+        self._send(response)
 
-    def _send(self, message: JsonObject) -> None:
-        data = JsonLines.encode(message, fallback=str)
+    @staticmethod
+    def _request_id(line: bytes) -> int | None:
+        try:
+            raw = json.loads(line)
+        except ValueError:
+            return None
+        request_id = raw.get("id") if isinstance(raw, dict) else None
+        return request_id if isinstance(request_id, int) else None
+
+    def _send(self, message: object) -> None:
+        data = self._encoder.encode(message)
         with self._write_lock:
             try:
                 self._out.write(data)

@@ -12,10 +12,13 @@ function config(resource?: vscode.Uri): vscode.WorkspaceConfiguration {
 }
 
 export const settings = {
-  /** Collector options from the user's settings; explicitly given `overrides` win. */
+  /**
+   * Collector options from the user's settings; explicitly given `overrides` win.
+   * The sampling rate and traceback depth are raised to at least 1 (settings and launch configs may hold any number).
+   */
   collectorOptions(resource?: vscode.Uri, overrides: CollectorOptions = {}): CollectorOptions {
     const c = config(resource);
-    return {
+    const options: CollectorOptions = {
       rateHz: c.get('samplingRate', 1000),
       native: c.get('nativeFrames', false),
       blocking: c.get('blockingSampling', false),
@@ -26,6 +29,11 @@ export const settings = {
       asyncAware: true,
       gc: true,
       ...(Object.fromEntries(Object.entries(overrides).filter(([, v]) => v !== undefined)) as CollectorOptions),
+    };
+    return {
+      ...options,
+      rateHz: Math.max(1, options.rateHz ?? 1000),
+      tracemallocFrames: Math.max(1, options.tracemallocFrames ?? 16),
     };
   },
 

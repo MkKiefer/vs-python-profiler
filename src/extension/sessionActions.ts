@@ -54,26 +54,26 @@ export class SessionActions {
       );
     }
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Taking memory snapshot…' }, () =>
-      client.request('snapshot', { label }, SLOW_REQUEST_TIMEOUT_MS),
+      client.request('TakeSnapshot', { label }, SLOW_REQUEST_TIMEOUT_MS),
     );
   }
 
   /** Switch tracemalloc on or off (toggles when `enabled` is omitted). */
   async setTracemalloc(session: Session, enabled = !session.capabilities.tracemalloc): Promise<void> {
-    await this.liveClient(session).request('tracemalloc', { enabled });
+    await this.liveClient(session).request('SetTracemalloc', { enabled });
     session.updateCapabilities({ tracemalloc: enabled });
   }
 
   /** Switch asyncio debug mode on or off (toggles when `enabled` is omitted). */
   async setAsyncioDebug(session: Session, enabled = !session.capabilities.asyncioDebug): Promise<void> {
-    await this.liveClient(session).request('asyncioDebug', { enabled, slowMs: settings.slowCallbackMs() });
+    await this.liveClient(session).request('SetAsyncioDebug', { enabled, slowMs: settings.slowCallbackMs() });
     session.updateCapabilities({ asyncioDebug: enabled });
   }
 
   async countObjects(session: Session): Promise<void> {
     const client = this.liveClient(session);
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: 'Counting objects…' }, () =>
-      client.request('objectCounts', {}, SLOW_REQUEST_TIMEOUT_MS),
+      client.request('CountObjects', {}, SLOW_REQUEST_TIMEOUT_MS),
     );
   }
 
@@ -81,7 +81,7 @@ export class SessionActions {
   async mark(session: Session, name?: string): Promise<void> {
     const client = this.liveClient(session);
     const marker = name ?? (await vscode.window.showInputBox({ prompt: 'Marker name', value: 'marker' }));
-    if (marker) await client.request('mark', { name: marker });
+    if (marker) await client.request('Mark', { name: marker });
   }
 
   async saveAs(session: Session): Promise<void> {

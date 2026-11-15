@@ -1,100 +1,35 @@
 import unittest
 
 from _vscode_pyprof.agent_protocol.hello import ThreadName
+from _vscode_pyprof.agent_protocol.messages import FROM_AGENT
 from _vscode_pyprof.agent_protocol.metrics import AgentEvent, AgentMetrics, EventDetails, LoopMetrics, TracedMemory
-from _vscode_pyprof.wire import WireError
-
-
-class TestLoopMetrics(unittest.TestCase):
-    def test_to_wire_names_the_loop_id_loop(self) -> None:
-        loop = LoopMetrics(loop_id=7, thread="MainThread", lag_ms=3.5, tasks=4)
-
-        self.assertEqual(loop.to_wire(), {"loop": 7, "thread": "MainThread", "lagMs": 3.5, "tasks": 4})
-
-    def test_to_wire_round_trips_through_from_wire(self) -> None:
-        loop = LoopMetrics(loop_id=7, thread="MainThread", lag_ms=3.5, tasks=4)
-
-        self.assertEqual(LoopMetrics.from_wire(loop.to_wire()), loop)
-
-    def test_from_wire_without_task_count_reads_none(self) -> None:
-        loop = LoopMetrics.from_wire({"loop": 7, "thread": "MainThread", "lagMs": 1.0, "tasks": None})
-
-        self.assertIsNone(loop.tasks)
-
-    def test_from_wire_without_lag_raises_wire_error(self) -> None:
-        with self.assertRaisesRegex(WireError, r"\$\.lagMs is missing"):
-            LoopMetrics.from_wire({"loop": 7, "thread": "MainThread"})
-
-
-class TestEventDetails(unittest.TestCase):
-    def test_to_wire_contains_only_known_fields(self) -> None:
-        self.assertEqual(
-            EventDetails(seconds=0.2, handle="<Handle work()>").to_wire(), {"seconds": 0.2, "handle": "<Handle work()>"}
-        )
-
-    def test_to_wire_without_details_is_empty(self) -> None:
-        self.assertEqual(EventDetails().to_wire(), {})
-
-    def test_to_wire_round_trips_through_from_wire(self) -> None:
-        details = EventDetails(thread="MainThread", seconds=0.2, handle="h", file="app.py", line=12)
-
-        self.assertEqual(EventDetails.from_wire(details.to_wire()), details)
-
-
-class TestAgentEvent(unittest.TestCase):
-    def test_from_wire_reads_kind_message_time_and_details(self) -> None:
-        event = AgentEvent.from_wire(
-            {"t": 12.5, "kind": "slow-callback", "message": "took 0.2s", "details": {"seconds": 0.2}}
-        )
-
-        self.assertEqual(event, AgentEvent("slow-callback", "took 0.2s", 12.5, EventDetails(seconds=0.2)))
-
-    def test_from_wire_without_time_or_details_has_neither(self) -> None:
-        event = AgentEvent.from_wire({"kind": "asyncio", "message": "x"})
-
-        self.assertEqual(event, AgentEvent("asyncio", "x", None, EventDetails()))
-
-    def test_to_wire_round_trips_through_from_wire(self) -> None:
-        event = AgentEvent(
-            "never-awaited", "coroutine 'work' was never awaited", 3.0, EventDetails(file="a.py", line=4)
-        )
-
-        self.assertEqual(AgentEvent.from_wire(event.to_wire()), event)
-
-    def test_to_wire_without_time_leaves_it_out(self) -> None:
-        self.assertEqual(AgentEvent("asyncio", "m").to_wire(), {"kind": "asyncio", "message": "m", "details": {}})
+from _vscode_pyprof.wire import WireDecoder, WireEncoder
 
 
 class TestAgentMetrics(unittest.TestCase):
-    def test_from_wire_with_threads_only_has_no_measurements(self) -> None:
-        metrics = AgentMetrics.from_wire({"type": "metrics", "threads": []})
+    def setUp(self) -> None:
+        self.encoder = WireEncoder()
+        self.decoder = WireDecoder(FROM_AGENT)
 
-        self.assertEqual(metrics, AgentMetrics(threads=[], traced=None, loops=[], events=[]))
-
-    def test_from_wire_while_tracing_reads_traced_memory(self) -> None:
-        metrics = AgentMetrics.from_wire({"type": "metrics", "threads": [], "traced": {"current": 1000, "peak": 2000}})
-
-        self.assertEqual(metrics.traced, TracedMemory(current=1000, peak=2000))
-
-    def test_from_wire_with_an_event_that_is_not_an_object_raises_wire_error(self) -> None:
-        with self.assertRaisesRegex(WireError, r"\$\.events\[0\] must be an object"):
-            AgentMetrics.from_wire({"type": "metrics", "threads": [], "events": ["oops"]})
-
-    def test_to_wire_is_tagged_as_metrics_message(self) -> None:
-        self.assertEqual(AgentMetrics(threads=[]).to_wire()["type"], "metrics")
-
-    def test_to_wire_without_tracing_leaves_traced_memory_out(self) -> None:
-        self.assertNotIn("traced", AgentMetrics(threads=[]).to_wire())
-
-    def test_to_wire_round_trips_through_from_wire(self) -> None:
+    def test_encode_round_trips_through_the_collector_decoder(self) -> None:
         metrics = AgentMetrics(
             threads=[ThreadName(1, 101, "MainThread")],
             traced=TracedMemory(1000, 2000),
-            loops=[LoopMetrics(7, "MainThread", 3.5, 4)],
+            loops=[LoopMetrics(7, "MainThread", 3.5, None)],
             events=[AgentEvent("slow-callback", "took 0.2s", 12.5, EventDetails(seconds=0.2))],
         )
 
-        self.assertEqual(AgentMetrics.from_wire(metrics.to_wire()), metrics)
+        self.assertEqual(self.decoder.decode(self.encoder.encode(metrics)), metrics)
+
+    def test_decode_with_threads_only_has_no_measurements(self) -> None:
+        metrics = self.decoder.decode('{"type": "AgentMetrics", "threads": []}')
+
+        self.assertEqual(metrics, AgentMetrics(threads=[], traced=None, loops=[], events=[]))
+
+    def test_decode_of_event_without_time_or_details_has_neither(self) -> None:
+        event = self.decoder.decode('{"type": "AgentEvent", "kind": "asyncio", "message": "x"}')
+
+        self.assertEqual(event, AgentEvent("asyncio", "x", None, EventDetails()))
 
 
 if __name__ == "__main__":

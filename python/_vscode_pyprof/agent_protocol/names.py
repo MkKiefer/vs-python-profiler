@@ -1,26 +1,6 @@
-"""Names used on the wire between the collector and the in-process agent."""
+"""Names used in the messages between the collector and the in-process agent."""
 
 from enum import StrEnum
-
-
-class AgentMessageType(StrEnum):
-    """``type`` of a message the agent sends."""
-
-    HELLO = "hello"
-    METRICS = "metrics"
-    RESULT = "result"
-
-
-class AgentCommand(StrEnum):
-    """``method`` of a request the collector sends to the agent."""
-
-    TRACEMALLOC_START = "tracemalloc_start"
-    TRACEMALLOC_STOP = "tracemalloc_stop"
-    SNAPSHOT = "snapshot"
-    OBJECT_COUNTS = "object_counts"
-    ASYNCIO_DEBUG = "asyncio_debug"
-    PING = "ping"
-    SHUTDOWN = "shutdown"
 
 
 class EventKind(StrEnum):

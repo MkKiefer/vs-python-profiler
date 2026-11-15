@@ -6,15 +6,15 @@ import time
 from dataclasses import dataclass
 
 from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.wire import JsonObject, WireWritable
+from _vscode_pyprof.wire import JsonObject
 
 
 @dataclass(frozen=True, slots=True)
-class ProfileMeta(WireWritable):
+class ProfileMeta:
     """Mirror of ``ProfileMeta`` in ``src/shared/model.ts``.
 
     The interpreter facts are known from the start; the others are filled in as
-    the session learns them and are left out of the wire object until then (the
+    the session learns them and are left out of the profile until then (the
     dashboard merges ``meta`` objects, so a ``null`` would erase a known value).
     """
 
@@ -45,8 +45,8 @@ class ProfileMeta(WireWritable):
             started_at=time.time(),
         )
 
-    def to_wire(self) -> JsonObject:
-        wire: JsonObject = {
+    def to_profile(self) -> JsonObject:
+        meta: JsonObject = {
             "python": self.python,
             "implementation": self.implementation,
             "freeThreaded": self.free_threaded,
@@ -54,7 +54,7 @@ class ProfileMeta(WireWritable):
             "startedAt": self.started_at,
         }
         known_later: JsonObject = {
-            "options": self.options.to_wire() if self.options is not None else None,
+            "options": self._options_profile(self.options) if self.options is not None else None,
             "label": self.label,
             "pid": self.pid,
             "agent": self.agent or None,
@@ -62,4 +62,20 @@ class ProfileMeta(WireWritable):
             "argv": self.argv,
             "cwd": self.cwd,
         }
-        return wire | self._omit_none(known_later)
+        meta.update((key, value) for key, value in known_later.items() if value is not None)
+        return meta
+
+    @staticmethod
+    def _options_profile(options: CollectorOptions) -> JsonObject:
+        return {
+            "rateHz": options.rate_hz,
+            "native": options.native,
+            "gc": options.gc,
+            "asyncAware": options.async_aware,
+            "tracemalloc": options.tracemalloc,
+            "tracemallocFrames": options.tracemalloc_frames,
+            "asyncioDebug": options.asyncio_debug,
+            "slowCallbackMs": options.slow_callback_ms,
+            "stripLauncher": options.strip_launcher,
+            "blocking": options.blocking,
+        }

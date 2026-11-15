@@ -26,13 +26,9 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
 
 from _vscode_pyprof.agent_protocol.address import AgentAddress
 from _vscode_pyprof.agent_protocol.commands import (
-    AgentRequest,
-    CommandCall,
-    CommandResult,
     CountObjects,
     Ping,
     SetAsyncioDebug,
@@ -42,13 +38,14 @@ from _vscode_pyprof.agent_protocol.commands import (
     TakeSnapshot,
 )
 from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
+from _vscode_pyprof.agent_protocol.messages import TO_AGENT
 from _vscode_pyprof.agent_protocol.metrics import AgentEvent, AgentMetrics
 from _vscode_pyprof.agent_protocol.options import AgentOptions
-from _vscode_pyprof.agent_protocol.replies import Acknowledgement, AsyncioDebugStatus, Pong
+from _vscode_pyprof.agent_protocol.replies import AsyncioDebugStatus, Pong
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
 from _vscode_pyprof.target.loop_monitor import LoopMonitor
 from _vscode_pyprof.target.memory_probe import MemoryProbe
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireWritable
+from _vscode_pyprof.wire import LineBuffer, Request, Response, WireDecoder, WireEncoder, WireError
 
 
 class Agent(threading.Thread):
@@ -66,6 +63,8 @@ class Agent(threading.Thread):
         loops: LoopMonitor,
         memory: MemoryProbe,
         events: deque[AgentEvent],
+        encoder: WireEncoder,
+        decoder: WireDecoder,
     ) -> None:
         """``events`` is filled from any thread; the agent drains it into its metrics."""
         super().__init__(name="pyprof-agent", daemon=True)
@@ -74,17 +73,11 @@ class Agent(threading.Thread):
         self._loops = loops
         self._memory = memory
         self._events = events
+        self._encoder = encoder
+        self._decoder = decoder
         self._socket: socket.socket | None = None
         self._write_lock = threading.Lock()
         self._halt = threading.Event()
-        self._commands: dict[str, Callable[[JsonObject], WireWritable]] = {}
-        self._register(StartTracing, self._start_tracing)
-        self._register(StopTracing, self._stop_tracing)
-        self._register(TakeSnapshot, self._snapshot)
-        self._register(CountObjects, self._object_counts)
-        self._register(SetAsyncioDebug, self._set_asyncio_debug)
-        self._register(Ping, self._ping)
-        self._register(Shutdown, self._shutdown)
 
     @property
     def connected(self) -> bool:
@@ -127,7 +120,7 @@ class Agent(threading.Thread):
             self._loops.set_debug(True, self._options.slow_callback_ms)
 
     def _serve(self, sock: socket.socket) -> None:
-        lines = JsonLines()
+        lines = LineBuffer()
         last_metrics = 0.0
         while not self._halt.is_set():
             readable, _, _ = select.select([sock], [], [], self._PROBE_INTERVAL)
@@ -136,31 +129,48 @@ class Agent(threading.Thread):
                 if not chunk:
                     break
                 lines.feed(chunk)
-                while (request := lines.next_message()) is not None:
-                    self._dispatch(request)
+                while (line := lines.next_line()) is not None:
+                    self._answer(line)
             now = time.perf_counter()
             self._loops.probe(now)
             if now - last_metrics >= self._METRICS_INTERVAL:
                 last_metrics = now
                 self._send_metrics(now)
 
-    def _register[R: AgentRequest](self, request_type: type[R], handler: Callable[[R], WireWritable]) -> None:
-        self._commands[request_type.command] = lambda params: handler(request_type.from_wire(params, "params"))
-
-    def _dispatch(self, raw: JsonObject) -> None:
-        """Run one command. Raises ``WireError`` for a message that is not a command (the collector is broken)."""
-        call = CommandCall.from_wire(raw)
+    def _answer(self, line: bytes) -> None:
+        """Run one command. Raises ``ValueError`` for a line that is not a request (the collector is broken)."""
+        request = self._decoder.decode(line)
+        if not isinstance(request, Request):
+            raise WireError(f"expected a Request, got {type(request).__name__}")
         try:
-            command = self._commands.get(call.method)
-            if command is None:
-                raise ValueError(f"unknown agent command {call.method!r}")
-            reply = CommandResult(call.id, result=command(call.params).to_wire())
+            response = Response(request.id, result=self._run(request.body))
         except Exception as error:  # report every failure to the collector instead of dying
-            reply = CommandResult(call.id, error=f"{type(error).__name__}: {error}")
-        self._send(reply)
+            response = Response(request.id, error=f"{type(error).__name__}: {error}")
+        self._send(response)
 
-    def _send(self, message: AgentHello | AgentMetrics | CommandResult) -> None:
-        data = JsonLines.encode(message.to_wire(), fallback=repr)
+    def _run(self, command: object) -> object:
+        """What one command answers; see ``agent_protocol.commands``."""
+        match command:
+            case StartTracing(frames=frames):
+                return self._memory.start_tracing(frames)
+            case StopTracing():
+                return self._memory.stop_tracing()
+            case TakeSnapshot(limit=limit):
+                return self._memory.snapshot(limit)
+            case CountObjects(limit=limit):
+                return self._memory.object_counts(limit)
+            case SetAsyncioDebug(enabled=enabled, slow_ms=slow_ms):
+                self._loops.set_debug(enabled, slow_ms)
+                return AsyncioDebugStatus(self._loops.debug, self._loops.loop_count)
+            case Ping():
+                return Pong(time.perf_counter(), os.getpid())
+            case Shutdown():
+                self._halt.set()
+                return None
+        raise ValueError(f"unknown agent command {type(command).__name__}")
+
+    def _send(self, message: AgentHello | AgentMetrics | Response) -> None:
+        data = self._encoder.encode(message)
         with self._write_lock:
             if self._socket is None:
                 return
@@ -201,30 +211,6 @@ class Agent(threading.Thread):
             except OSError:
                 pass
 
-    # ---- commands: one per ``AgentCommand``, each returns the result sent back to the collector
-    def _start_tracing(self, request: StartTracing) -> WireWritable:
-        return self._memory.start_tracing(request.frames)
-
-    def _stop_tracing(self, _request: StopTracing) -> WireWritable:
-        return self._memory.stop_tracing()
-
-    def _snapshot(self, request: TakeSnapshot) -> WireWritable:
-        return self._memory.snapshot(request.limit)
-
-    def _object_counts(self, request: CountObjects) -> WireWritable:
-        return self._memory.object_counts(request.limit)
-
-    def _set_asyncio_debug(self, request: SetAsyncioDebug) -> WireWritable:
-        self._loops.set_debug(request.enabled, request.slow_ms)
-        return AsyncioDebugStatus(self._loops.debug, self._loops.loop_count)
-
-    def _ping(self, _request: Ping) -> WireWritable:
-        return Pong(time.perf_counter(), os.getpid())
-
-    def _shutdown(self, _request: Shutdown) -> WireWritable:
-        self._halt.set()
-        return Acknowledgement()
-
 
 class AgentRegistry:
     """The one agent of this process, and the place where it is assembled."""
@@ -236,15 +222,26 @@ class AgentRegistry:
     def start(cls, address: str, options_json: str | None) -> Agent:
         with cls._lock:
             if cls._agent is None or not cls._agent.is_alive():
-                cls._agent = cls._create(AgentAddress.parse(address), AgentOptions.from_json(options_json))
+                cls._agent = cls._create(AgentAddress.parse(address), options_json)
                 cls._agent.start()
             return cls._agent
 
-    @staticmethod
-    def _create(address: AgentAddress, options: AgentOptions) -> Agent:
+    @classmethod
+    def _create(cls, address: AgentAddress, options_json: str | None) -> Agent:
+        decoder = WireDecoder(TO_AGENT)
         events: deque[AgentEvent] = deque()
         loops = LoopMonitor(AsyncioDebugCapture(events.append))
-        return Agent(address, options, loops, MemoryProbe(), events)
+        options = cls.read_options(decoder, options_json)
+        return Agent(address, options, loops, MemoryProbe(), events, WireEncoder(), decoder)
+
+    @staticmethod
+    def read_options(decoder: WireDecoder, options_json: str | None) -> AgentOptions:
+        """The options the collector wrote; text that is missing or unusable gives the defaults."""
+        try:
+            options = decoder.decode(options_json) if options_json else None
+        except ValueError:  # not JSON, or not a message
+            options = None
+        return options if isinstance(options, AgentOptions) else AgentOptions()
 
 
 def start(address: str, options_json: str | None = None) -> Agent:
@@ -253,7 +250,7 @@ def start(address: str, options_json: str | None = None) -> Agent:
     Entry point for the launcher and for the script ``sys.remote_exec`` runs.
     Both arguments are text because they cross a process boundary (environment
     variable, injected script): ``address`` is an ``AgentAddress``
-    (``host:port:token``), ``options_json`` an ``AgentOptions`` object as JSON.
+    (``host:port:token``), ``options_json`` an ``AgentOptions`` message as one JSON line.
     Raises ``ValueError`` for a malformed address.
     """
     return AgentRegistry.start(address, options_json)

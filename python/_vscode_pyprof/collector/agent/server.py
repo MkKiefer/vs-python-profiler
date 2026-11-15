@@ -8,7 +8,7 @@ from _vscode_pyprof.agent_protocol.address import AgentAddress
 from _vscode_pyprof.agent_protocol.hello import AgentHello
 from _vscode_pyprof.collector.agent.connection import AgentConnection
 from _vscode_pyprof.collector.agent.listener import AgentListener
-from _vscode_pyprof.wire import JsonLines
+from _vscode_pyprof.wire import LineBuffer, WireDecoder, WireEncoder
 
 
 class AgentServer:
@@ -22,7 +22,10 @@ class AgentServer:
     _RECEIVE_SIZE = 65536
     _BACKLOG = 8
 
-    def __init__(self) -> None:
+    def __init__(self, encoder: WireEncoder, decoder: WireDecoder) -> None:
+        """``decoder`` reads what agents send (``agent_protocol.messages.FROM_AGENT``)."""
+        self._encoder = encoder
+        self._decoder = decoder
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.bind(("127.0.0.1", 0))
         self._socket.listen(self._BACKLOG)
@@ -60,21 +63,21 @@ class AgentServer:
             sock.close()
             return
         sock.settimeout(self._HANDSHAKE_TIMEOUT)
-        lines = JsonLines()
+        lines = LineBuffer()
         try:
-            while (message := lines.next_message()) is None:
+            while (line := lines.next_line()) is None:
                 chunk = sock.recv(self._RECEIVE_SIZE)
                 if not chunk:
                     raise OSError("closed during handshake")
                 lines.feed(chunk)
-            hello = AgentHello.from_wire(message)  # WireError (a ValueError) unless it is a hello
-            if not self._is_authentic(hello):
+            hello = self._decoder.decode(line)  # ValueError unless it is a known message
+            if not isinstance(hello, AgentHello) or not self._is_authentic(hello):
                 raise OSError("bad agent token")
         except OSError, ValueError:
             sock.close()
             return
         sock.settimeout(None)
-        connection = AgentConnection(sock, hello, listener, lines)
+        connection = AgentConnection(sock, hello, listener, lines, self._encoder, self._decoder)
         listener.on_agent_hello(connection)
         connection.start()
 

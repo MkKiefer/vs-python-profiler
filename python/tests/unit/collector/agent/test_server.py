@@ -27,13 +27,15 @@ class TestAgentServer(AgentLinkTestCase):
     def test_unsolicited_message_is_forwarded_to_listener(self) -> None:
         self.connect()
 
-        self.agent.send({"type": "metrics", "threads": [], "traced": {"current": 100, "peak": 150}})
+        self.agent.send(
+            {"type": "AgentMetrics", "threads": [], "traced": {"type": "TracedMemory", "current": 100, "peak": 150}}
+        )
 
         self.assertTrue(self.listener.message_received.wait(5))
         self.assertEqual(self.listener.metrics[0].traced, TracedMemory(100, 150))
 
     def test_first_message_that_is_not_a_hello_closes_connection(self) -> None:
-        self.agent.send({"type": "metrics", "threads": []})
+        self.agent.send({"type": "AgentMetrics", "threads": []})
 
         self.assertTrue(self.agent.read_is_end_of_stream())
         self.assertFalse(self.listener.connected.is_set())

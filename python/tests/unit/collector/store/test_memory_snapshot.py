@@ -19,7 +19,7 @@ class TestMemorySnapshot(unittest.TestCase):
             sites=(AllocationSite(stack=4, size=200, count=2), AllocationSite(stack=7, size=100, count=1)),
         )
 
-        wire = snapshot.to_wire()
+        wire = snapshot.to_profile()
 
         self.assertEqual(wire["entries"], [[4, 200, 2], [7, 100, 1]])
         self.assertEqual((wire["id"], wire["label"], wire["totalSize"]), (1, "A", 300))

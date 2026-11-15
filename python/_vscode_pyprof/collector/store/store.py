@@ -215,9 +215,9 @@ class Store:
             data = self._tables(new_only=True)
             data["threads"] = {str(thread_id): self._threads[thread_id] for thread_id in self._renamed_threads}
             latest_counts = self._object_counts.rows(new_only=True)[-1:]  # only the latest is shown live
-            data["objectCounts"] = [counts.to_wire() for counts in latest_counts]
+            data["objectCounts"] = [self._counts_profile(counts) for counts in latest_counts]
             if self._meta_changed:
-                data["meta"] = self._meta.to_wire()
+                data["meta"] = self._meta.to_profile()
             self._renamed_threads.clear()
             self._meta_changed = False
             return data
@@ -227,8 +227,8 @@ class Store:
         with self._lock:
             data = self._tables(new_only=False)
             data["threads"] = {str(thread_id): name for thread_id, name in self._threads.items()}
-            data["objectCounts"] = [counts.to_wire() for counts in self._object_counts.rows(new_only=False)]
-            data["meta"] = self._meta.to_wire()
+            data["objectCounts"] = [self._counts_profile(counts) for counts in self._object_counts.rows(new_only=False)]
+            data["meta"] = self._meta.to_profile()
             data["format"] = self.FORMAT
             data["version"] = self.FORMAT_VERSION
             return data
@@ -243,17 +243,21 @@ class Store:
             "now": round(self._clock.now(), 2),
             "frames": self._stacks.frames.rows(new_only=new_only),
             "stacks": self._stacks.stacks.rows(new_only=new_only),
-            "samples": self._samples.to_wire(new_only=new_only),
-            "asyncSamples": self._async_samples.to_wire(new_only=new_only),
+            "samples": self._samples.to_profile(new_only=new_only),
+            "asyncSamples": self._async_samples.to_profile(new_only=new_only),
             "tracks": tracks,
             "gc": self._gc.rows(new_only=new_only),
             "markers": self._markers.rows(new_only=new_only),
-            "events": [event.to_wire() for event in self._events.rows(new_only=new_only)],
-            "tasks": [task.to_wire() for task in self._tasks.records(new_only=new_only)],
+            "events": [event.to_profile() for event in self._events.rows(new_only=new_only)],
+            "tasks": [task.to_profile() for task in self._tasks.records(new_only=new_only)],
             "taskEvents": self._tasks.events.rows(new_only=new_only),
-            "snapshots": [snapshot.to_wire() for snapshot in self._snapshots.rows(new_only=new_only)],
-            "stats": self.stats().to_wire(),
+            "snapshots": [snapshot.to_profile() for snapshot in self._snapshots.rows(new_only=new_only)],
+            "stats": self.stats().to_profile(),
         }
+
+    @staticmethod
+    def _counts_profile(counts: ObjectCounts) -> JsonObject:
+        return {"t": counts.t, "counts": [[count.type_name, count.count] for count in counts.counts]}
 
     def _rounded_time(self, t: float | None) -> float:
         return round(self._clock.now() if t is None else t, 2)
