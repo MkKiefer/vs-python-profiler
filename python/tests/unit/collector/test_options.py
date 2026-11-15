@@ -13,6 +13,12 @@ class TestCollectorOptions(unittest.TestCase):
     def test_decode_without_keys_uses_defaults(self) -> None:
         self.assertEqual(self.decoder.decode('{"type": "CollectorOptions"}'), CollectorOptions())
 
+    def test_decode_without_strip_launcher_strips_launcher_frames(self) -> None:
+        options = self.decoder.decode('{"type": "CollectorOptions"}')
+
+        assert isinstance(options, CollectorOptions)
+        self.assertTrue(options.strip_launcher)
+
     def test_decode_reads_camel_case_keys(self) -> None:
         line = '{"type": "CollectorOptions", "rateHz": 250, "stripLauncher": true, "tracemallocFrames": 4}'
 

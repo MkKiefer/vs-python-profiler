@@ -21,7 +21,9 @@ class CollectorOptions:
     tracemalloc_frames: int = 16
     asyncio_debug: bool = False
     slow_callback_ms: float = 100.0
-    strip_launcher: bool = False
+    strip_launcher: bool = True
+    """Drop the launcher/runpy frames at the root of stacks. Must stay on for launched programs: the
+    launcher's frames are profiler code, and a stack that contains profiler code is discarded as internal."""
     blocking: bool = False
 
     def agent_options(self) -> AgentOptions:
