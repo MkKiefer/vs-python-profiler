@@ -1,11 +1,11 @@
-/** The one place that reads and writes `pyprof.*` settings (keys and defaults mirror package.json). */
+/** The one place that reads and writes `vspyprof.*` settings (keys and defaults mirror package.json). */
 import * as vscode from 'vscode';
 import type { CollectorOptions } from '../shared/protocol';
 
 export type FollowChildren = 'ask' | 'always' | 'never';
 export type HeatMetric = 'self' | 'total';
 
-const SECTION = 'pyprof';
+const SECTION = 'vspyprof';
 
 function config(resource?: vscode.Uri): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration(SECTION, resource);

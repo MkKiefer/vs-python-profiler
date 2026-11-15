@@ -48,7 +48,7 @@ const stateLabel = computed(() => (session.state === 'file' ? 'saved profile' : 
       </UiButton>
       <UiButton primary icon="■" :disabled="session.isRunning('stop')" @click="session.run('stop', {})">Stop</UiButton>
     </template>
-    <UiButton title="Save as .pyprof" :disabled="session.isRunning('save')" @click="session.run('save', {})">Save</UiButton>
+    <UiButton title="Save as .vspyprof" :disabled="session.isRunning('save')" @click="session.run('save', {})">Save</UiButton>
     <UiButton title="Export to speedscope" :disabled="session.isRunning('exportSpeedscope')" @click="session.run('exportSpeedscope', {})">
       Export
     </UiButton>

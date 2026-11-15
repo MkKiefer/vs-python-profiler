@@ -1,4 +1,4 @@
-/** Registers every `pyprof.*` command and maps it to the object that implements it. */
+/** Registers every `vspyprof.*` command and maps it to the object that implements it. */
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import type { Dashboards } from './dashboards';
@@ -35,33 +35,33 @@ export class Commands {
   register(ctx: vscode.ExtensionContext): void {
     const { sessions, actions, launcher, picker, heat, processesView } = this.deps;
     const handlers: Record<string, (...args: never[]) => unknown> = {
-      'pyprof.profileFile': (arg?: unknown) => launcher.profileFile(arg),
-      'pyprof.profileConfiguration': () => launcher.profileConfiguration(),
-      'pyprof.profileTest': () => launcher.profileTest(),
-      'pyprof.attach': () => picker.pickAndAttach(),
-      'pyprof.attachProcess': (process: ProcInfo) => picker.attach(process),
-      'pyprof.refreshProcesses': () => processesView.refresh(),
-      'pyprof.stop': (arg: SessionArgument) => this.withLiveSession(arg, (s) => sessions.stop(s)),
-      'pyprof.stopAndTerminate': (arg: SessionArgument) => this.withLiveSession(arg, (s) => sessions.stop(s, true)),
-      'pyprof.snapshot': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.snapshot(s)),
-      'pyprof.toggleTracemalloc': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.setTracemalloc(s)),
-      'pyprof.toggleAsyncioDebug': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.setAsyncioDebug(s)),
-      'pyprof.mark': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.mark(s)),
-      'pyprof.openDashboard': (arg: SessionArgument) => this.openDashboard(arg),
-      'pyprof.selectSession': (id: string) => this.selectSession(id),
-      'pyprof.saveProfile': (arg: SessionArgument) => this.withSession(arg, (s) => actions.saveAs(s)),
-      'pyprof.export': (arg: SessionArgument) => this.withSession(arg, (s) => actions.export(s)),
-      'pyprof.removeSession': (arg: SessionArgument) => this.withSession(arg, (s) => sessions.remove(s)),
-      'pyprof.deleteSession': (node: SessionNode) => this.deleteSavedProfile(node),
-      'pyprof.openProfile': () => this.openProfile(),
-      'pyprof.toggleHeat': () => heat.toggle(),
-      'pyprof.revealFunction': (id: string, fn: number, openFile?: boolean) => this.revealFunction(id, fn, openFile),
+      'vspyprof.profileFile': (arg?: unknown) => launcher.profileFile(arg),
+      'vspyprof.profileConfiguration': () => launcher.profileConfiguration(),
+      'vspyprof.profileTest': () => launcher.profileTest(),
+      'vspyprof.attach': () => picker.pickAndAttach(),
+      'vspyprof.attachProcess': (process: ProcInfo) => picker.attach(process),
+      'vspyprof.refreshProcesses': () => processesView.refresh(),
+      'vspyprof.stop': (arg: SessionArgument) => this.withLiveSession(arg, (s) => sessions.stop(s)),
+      'vspyprof.stopAndTerminate': (arg: SessionArgument) => this.withLiveSession(arg, (s) => sessions.stop(s, true)),
+      'vspyprof.snapshot': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.snapshot(s)),
+      'vspyprof.toggleTracemalloc': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.setTracemalloc(s)),
+      'vspyprof.toggleAsyncioDebug': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.setAsyncioDebug(s)),
+      'vspyprof.mark': (arg: SessionArgument) => this.withLiveSession(arg, (s) => actions.mark(s)),
+      'vspyprof.openDashboard': (arg: SessionArgument) => this.openDashboard(arg),
+      'vspyprof.selectSession': (id: string) => this.selectSession(id),
+      'vspyprof.saveProfile': (arg: SessionArgument) => this.withSession(arg, (s) => actions.saveAs(s)),
+      'vspyprof.export': (arg: SessionArgument) => this.withSession(arg, (s) => actions.export(s)),
+      'vspyprof.removeSession': (arg: SessionArgument) => this.withSession(arg, (s) => sessions.remove(s)),
+      'vspyprof.deleteSession': (node: SessionNode) => this.deleteSavedProfile(node),
+      'vspyprof.openProfile': () => this.openProfile(),
+      'vspyprof.toggleHeat': () => heat.toggle(),
+      'vspyprof.revealFunction': (id: string, fn: number, openFile?: boolean) => this.revealFunction(id, fn, openFile),
     };
     for (const [id, handler] of Object.entries(handlers)) {
       ctx.subscriptions.push(vscode.commands.registerCommand(id, this.reportingErrors(handler)));
     }
-    // used as `${command:pyprof.pickProcess}`: its return value is the result, errors go to the caller
-    ctx.subscriptions.push(vscode.commands.registerCommand('pyprof.pickProcess', () => picker.pickPid()));
+    // used as `${command:vspyprof.pickProcess}`: its return value is the result, errors go to the caller
+    ctx.subscriptions.push(vscode.commands.registerCommand('vspyprof.pickProcess', () => picker.pickPid()));
   }
 
   /** Commands never fail silently: log the stack, tell the user. */

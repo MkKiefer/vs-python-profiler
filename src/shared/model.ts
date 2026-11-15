@@ -3,7 +3,7 @@
  *
  * Shared by the extension host (hotspots, editor heat, CodeLens) and the
  * dashboard webview (all charts). It is fed by `applyDelta()` – live deltas
- * and saved `.pyprof` files have the same shape.
+ * and saved `.vspyprof` files have the same shape.
  */
 
 export const enum Cat {
@@ -332,7 +332,7 @@ export class ProfileModel {
       objectCounts: this.objectCounts,
       meta: this.meta,
       stats: this.stats,
-      format: 'pyprof',
+      format: 'vspyprof',
     };
   }
 

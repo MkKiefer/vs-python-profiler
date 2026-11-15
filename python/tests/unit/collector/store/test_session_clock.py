@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from _vscode_pyprof.collector.store.session_clock import SessionClock
+from _vspyprof.collector.store.session_clock import SessionClock
 
 
 class TestSessionClock(unittest.TestCase):

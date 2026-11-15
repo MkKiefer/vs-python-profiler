@@ -1,7 +1,7 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.messages import FROM_AGENT
-from _vscode_pyprof.agent_protocol.replies import (
+from _vspyprof.agent_protocol.messages import FROM_AGENT
+from _vspyprof.agent_protocol.replies import (
     Allocation,
     AsyncioDebugStatus,
     HeapSnapshot,
@@ -11,7 +11,7 @@ from _vscode_pyprof.agent_protocol.replies import (
     TracingStatus,
     TypeCount,
 )
-from _vscode_pyprof.wire import Response, WireDecoder, WireEncoder
+from _vspyprof.wire import Response, WireDecoder, WireEncoder
 
 
 class TestReplies(unittest.TestCase):

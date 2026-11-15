@@ -5,12 +5,12 @@ import socket
 import threading
 import unittest
 
-from _vscode_pyprof.agent_protocol.messages import FROM_AGENT, TO_AGENT
-from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
-from _vscode_pyprof.collector.agent.connection import AgentConnection
-from _vscode_pyprof.collector.agent.listener import AgentListener
-from _vscode_pyprof.collector.agent.server import AgentServer
-from _vscode_pyprof.wire import JsonObject, Request, WireDecoder, WireEncoder
+from _vspyprof.agent_protocol.messages import FROM_AGENT, TO_AGENT
+from _vspyprof.agent_protocol.metrics import AgentMetrics
+from _vspyprof.collector.agent.connection import AgentConnection
+from _vspyprof.collector.agent.listener import AgentListener
+from _vspyprof.collector.agent.server import AgentServer
+from _vspyprof.wire import JsonObject, Request, WireDecoder, WireEncoder
 
 
 class RecordingListener(AgentListener):

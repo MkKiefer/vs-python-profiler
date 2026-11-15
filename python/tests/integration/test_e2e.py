@@ -21,7 +21,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 PYDIR = os.path.join(ROOT, "python")
 APPS = os.path.join(ROOT, "test-apps")
-BOOT = "import sys; sys.path.insert(0, sys.argv.pop(1)); from _vscode_pyprof.{mod} import {fn}; {fn}()"
+BOOT = "import sys; sys.path.insert(0, sys.argv.pop(1)); from _vspyprof.{mod} import {fn}; {fn}()"
 
 
 class Client:
@@ -123,8 +123,8 @@ class Client:
 
 def launch_target(client, info, app, *args):
     env = dict(os.environ)
-    env["PYPROF_AGENT"] = info["agentAddress"]
-    env["PYPROF_OPTIONS"] = info["agentOptions"]
+    env["VSPYPROF_AGENT"] = info["agentAddress"]
+    env["VSPYPROF_OPTIONS"] = info["agentOptions"]
     return subprocess.Popen(
         [
             sys.executable,
@@ -162,16 +162,16 @@ class E2E(unittest.TestCase):
                 while sid >= 0:
                     sid, fid = c.model["stacks"][sid]
                     files.add(c.model["frames"][fid][0])
-            self.assertFalse(any("_vscode_pyprof" in f for f in files), files)
+            self.assertFalse(any("_vspyprof" in f for f in files), files)
             self.assertFalse(any("runpy" in f for f in files), files)
             self.assertIn("checksum-worker", c.model["threads"].values())
             self.assertIn("rss", c.model["tracks"])
             with tempfile.TemporaryDirectory() as d:
-                path = os.path.join(d, "x.pyprof")
+                path = os.path.join(d, "x.vspyprof")
                 c.call("Save", {"path": path})
                 with gzip.open(path, "rt") as f:
                     data = json.load(f)
-                self.assertEqual(data["format"], "pyprof")
+                self.assertEqual(data["format"], "vspyprof")
                 self.assertEqual(len(data["samples"]["t"]), c.model["samples"])
         finally:
             c.close()

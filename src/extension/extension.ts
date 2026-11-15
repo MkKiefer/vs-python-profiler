@@ -42,10 +42,10 @@ export function activate(ctx: vscode.ExtensionContext): void {
   ctx.subscriptions.push(
     log, env, sessions, dashboards, heat, sessionsView, processesView, hotspotsView, tasksView,
     new StatusBar(sessions),
-    vscode.window.registerTreeDataProvider('pyprof.sessions', sessionsView),
-    vscode.window.registerTreeDataProvider('pyprof.processes', processesView),
-    vscode.window.registerTreeDataProvider('pyprof.hotspots', hotspotsView),
-    vscode.window.registerTreeDataProvider('pyprof.tasks', tasksView),
+    vscode.window.registerTreeDataProvider('vspyprof.sessions', sessionsView),
+    vscode.window.registerTreeDataProvider('vspyprof.processes', processesView),
+    vscode.window.registerTreeDataProvider('vspyprof.hotspots', hotspotsView),
+    vscode.window.registerTreeDataProvider('vspyprof.tasks', tasksView),
     vscode.window.registerCustomEditorProvider(ProfileEditorProvider.viewType, new ProfileEditorProvider(sessions, dashboards), {
       webviewOptions: { retainContextWhenHidden: true },
       supportsMultipleEditorsPerDocument: false,

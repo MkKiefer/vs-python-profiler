@@ -1,9 +1,9 @@
 import unittest
 
-from _vscode_pyprof.collector import requests
-from _vscode_pyprof.collector.messages import FROM_EXTENSION
-from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.wire import Request, WireDecoder, WireError
+from _vspyprof.collector import requests
+from _vspyprof.collector.messages import FROM_EXTENSION
+from _vspyprof.collector.options import CollectorOptions
+from _vspyprof.wire import Request, WireDecoder, WireError
 
 
 class TestFromExtension(unittest.TestCase):
@@ -31,7 +31,7 @@ class TestFromExtension(unittest.TestCase):
             ('{"type": "CountObjects"}', requests.CountObjects()),
             ('{"type": "SetAsyncioDebug", "enabled": true, "slowMs": 50}', requests.SetAsyncioDebug(True, 50)),
             ('{"type": "Mark", "name": "deploy"}', requests.Mark("deploy")),
-            ('{"type": "Save", "path": "/tmp/a.pyprof"}', requests.Save("/tmp/a.pyprof")),
+            ('{"type": "Save", "path": "/tmp/a.vspyprof"}', requests.Save("/tmp/a.vspyprof")),
             ('{"type": "Shutdown"}', requests.Shutdown()),
         ]
         for body, expected in cases:

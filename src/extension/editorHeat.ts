@@ -193,7 +193,7 @@ export class EditorHeat implements vscode.Disposable, vscode.CodeLensProvider {
         new vscode.CodeLens(doc.lineAt(line).range, {
           title: `$(flame) ${fmtPct(st.total, total)} total · ${fmtPct(st.self, total)} self · ≈${fmtMs(st.total * msPerSample)}`,
           tooltip: 'Show callers and callees in the profile dashboard',
-          command: 'pyprof.revealFunction',
+          command: 'vspyprof.revealFunction',
           arguments: [s.id, st.fn],
         }),
       );

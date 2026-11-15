@@ -7,18 +7,18 @@ const REFRESH_MS = 1000;
 const LAG_WARNING_MS = 100;
 
 export class StatusBar implements vscode.Disposable {
-  private readonly summary = vscode.window.createStatusBarItem('pyprof.status', vscode.StatusBarAlignment.Left, 50);
-  private readonly stop = vscode.window.createStatusBarItem('pyprof.stop', vscode.StatusBarAlignment.Left, 49);
+  private readonly summary = vscode.window.createStatusBarItem('vspyprof.status', vscode.StatusBarAlignment.Left, 50);
+  private readonly stop = vscode.window.createStatusBarItem('vspyprof.stop', vscode.StatusBarAlignment.Left, 49);
   private readonly disposables: vscode.Disposable[];
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly sessions: SessionManager) {
     this.summary.name = 'Python Profiler';
-    this.summary.command = 'pyprof.openDashboard';
+    this.summary.command = 'vspyprof.openDashboard';
     this.stop.name = 'Python Profiler: Stop';
     this.stop.text = '$(debug-stop)';
     this.stop.tooltip = 'Stop profiling';
-    this.stop.command = 'pyprof.stop';
+    this.stop.command = 'vspyprof.stop';
     this.disposables = [
       sessions.onDidChange(() => this.update()),
       sessions.onDidChangeActive(() => this.update()),

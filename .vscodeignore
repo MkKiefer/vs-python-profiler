@@ -2,7 +2,7 @@
 !dist/extension.js
 !dist/webview.js
 !dist/webview.css
-!python/_vscode_pyprof/**/*.py
+!python/_vspyprof/**/*.py
 !media/icon.png
 !media/activity.svg
 !package.json

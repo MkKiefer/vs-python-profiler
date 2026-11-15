@@ -5,8 +5,8 @@ dist-test/
 __pycache__/
 *.pyc
 .pytest_cache/
-*.pyprof
-!test/fixtures/*.pyprof
+*.vspyprof
+!test/fixtures/*.vspyprof
 .venv/
 .pdm-python
 .pdm-build/

@@ -149,7 +149,7 @@ export function defaultConfiguration(kind: DefaultConfigurationKind, detail = ''
     case 'pytest':
       return { name: 'Profile: pytest', ...base, module: 'pytest', args: ['-q'] };
     case 'attach':
-      return { name: 'Profile: Attach', type: 'python-profiler', request: 'attach', processId: '${command:pyprof.pickProcess}' };
+      return { name: 'Profile: Attach', type: 'python-profiler', request: 'attach', processId: '${command:vspyprof.pickProcess}' };
   }
 }
 

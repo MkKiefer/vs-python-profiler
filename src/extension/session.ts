@@ -1,4 +1,4 @@
-/** One profiled process (live) or one opened `.pyprof` file. */
+/** One profiled process (live) or one opened `.vspyprof` file. */
 import * as vscode from 'vscode';
 import type { CollectorClient } from './collectorClient';
 import type { PythonInfo } from './environment';

@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => {
       lib: {
         entry: 'src/webview/main.ts',
         formats: ['iife'],
-        name: 'PyprofDashboard',
+        name: 'VsvspyprofDashboard',
         fileName: () => 'webview.js',
         cssFileName: 'webview',
       },

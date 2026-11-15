@@ -24,7 +24,7 @@ const subscriptions: { dispose(): unknown }[] = [];
 let storage: string;
 
 before(() => {
-  storage = fs.mkdtempSync(path.join(os.tmpdir(), 'pyprof-test-'));
+  storage = fs.mkdtempSync(path.join(os.tmpdir(), 'vspyprof-test-'));
   const context = {
     extensionPath: ROOT,
     extensionUri: Uri.file(ROOT),
@@ -54,7 +54,7 @@ test('activation registers no undeclared commands except the process picker vari
 
   const undeclared = [...recorded.commands.keys()].filter((id) => !declared.has(id));
 
-  assert.deepEqual(undeclared, ['pyprof.pickProcess']);
+  assert.deepEqual(undeclared, ['vspyprof.pickProcess']);
 });
 
 test('activation provides data for every contributed view', () => {
@@ -69,11 +69,11 @@ test('activation registers the profile editor and the debug type', () => {
 });
 
 test('activation reports that no session is live', () => {
-  assert.equal(recorded.contexts.get('pyprof.hasLiveSession'), false);
+  assert.equal(recorded.contexts.get('vspyprof.hasLiveSession'), false);
 });
 
 test('session commands without a session tell the user instead of failing', async () => {
-  const stop = recorded.commands.get('pyprof.stop');
+  const stop = recorded.commands.get('vspyprof.stop');
   assert.ok(stop);
 
   await assert.doesNotReject(async () => {

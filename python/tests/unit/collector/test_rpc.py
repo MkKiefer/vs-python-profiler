@@ -4,10 +4,10 @@ import threading
 import unittest
 from dataclasses import dataclass
 
-from _vscode_pyprof.collector.notifications import StateChanged
-from _vscode_pyprof.collector.protocol import SessionState
-from _vscode_pyprof.collector.rpc import RpcError, RpcServer
-from _vscode_pyprof.wire import JsonObject, Request, WireDecoder, WireEncoder
+from _vspyprof.collector.notifications import StateChanged
+from _vspyprof.collector.protocol import SessionState
+from _vspyprof.collector.rpc import RpcError, RpcServer
+from _vspyprof.wire import JsonObject, Request, WireDecoder, WireEncoder
 
 
 @dataclass(frozen=True)

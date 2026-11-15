@@ -4,24 +4,24 @@ import os
 import tempfile
 import unittest
 
-from _vscode_pyprof.collector.profile_writer import ProfileWriter
+from _vspyprof.collector.profile_writer import ProfileWriter
 
 
 class TestProfileWriter(unittest.TestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.path = os.path.join(directory.name, "nested", "run.pyprof")
+        self.path = os.path.join(directory.name, "nested", "run.vspyprof")
         self.writer = ProfileWriter()
 
     def test_write_creates_gzipped_json_in_missing_directory(self) -> None:
-        self.writer.write(self.path, {"format": "pyprof", "markers": [[1.0, "deploy"]]})
+        self.writer.write(self.path, {"format": "vspyprof", "markers": [[1.0, "deploy"]]})
 
         with gzip.open(self.path, "rt", encoding="utf-8") as f:
-            self.assertEqual(json.load(f), {"format": "pyprof", "markers": [[1.0, "deploy"]]})
+            self.assertEqual(json.load(f), {"format": "vspyprof", "markers": [[1.0, "deploy"]]})
 
     def test_write_returns_file_size(self) -> None:
-        size = self.writer.write(self.path, {"format": "pyprof"})
+        size = self.writer.write(self.path, {"format": "vspyprof"})
 
         self.assertEqual(size, os.path.getsize(self.path))
 
@@ -32,7 +32,7 @@ class TestProfileWriter(unittest.TestCase):
 
         with gzip.open(self.path, "rt", encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"version": 2})
-        self.assertEqual(os.listdir(os.path.dirname(self.path)), ["run.pyprof"])
+        self.assertEqual(os.listdir(os.path.dirname(self.path)), ["run.vspyprof"])
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ export type CommandRequest = {
 // ──────────────────────────────────────────────────── extension ⇄ collector
 //
 // Every message is one JSON object per line whose `type` is the name of the
-// Python dataclass it is read into (`python/_vscode_pyprof/wire.py`); nested
+// Python dataclass it is read into (`python/_vspyprof/wire.py`); nested
 // dataclasses carry their `type` too. The collector writes `None` as `null`.
 
 export interface CollectorOptions {
@@ -98,7 +98,7 @@ export interface InitializeResult {
   pid: number;
   /** `host:port:token` the in-process agent connects back to */
   agentAddress: string;
-  /** the agent's start options as one JSON line; passed to a launched program as `PYPROF_OPTIONS` */
+  /** the agent's start options as one JSON line; passed to a launched program as `VSPYPROF_OPTIONS` */
   agentOptions: string;
   packageDir: string;
   features: { type: 'Features'; gcStats: boolean; remoteExec: boolean; asyncAware: boolean };
@@ -112,7 +112,7 @@ export interface AttachResult {
 }
 
 /**
- * The requests of the collector (`python/_vscode_pyprof/collector/requests.py`): the key is
+ * The requests of the collector (`python/_vspyprof/collector/requests.py`): the key is
  * the request's `type`, `params` its fields and `result` what the `Response` carries.
  */
 export interface CollectorRequests {
@@ -148,7 +148,7 @@ export interface CollectorResponse {
   error: string | null;
 }
 
-/** Notifications the collector pushes without being asked (`python/_vscode_pyprof/collector/notifications.py`). */
+/** Notifications the collector pushes without being asked (`python/_vspyprof/collector/notifications.py`). */
 export type CollectorNotification =
   | { type: 'Delta'; data: Delta }
   | { type: 'StateChanged'; state: 'running' | 'exited' | 'stopped'; pid: number | null; reason: string | null }

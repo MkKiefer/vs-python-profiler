@@ -1,4 +1,4 @@
-/** Reading and writing `.pyprof` files: gzip-compressed JSON in `Delta` shape. */
+/** Reading and writing `.vspyprof` files: gzip-compressed JSON in `Delta` shape. */
 import * as fs from 'node:fs';
 import * as zlib from 'node:zlib';
 import { promisify } from 'node:util';
@@ -7,8 +7,8 @@ import type { Delta } from '../shared/model';
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 
-export const PROFILE_EXTENSION = 'pyprof';
-const FORMAT = 'pyprof';
+export const PROFILE_EXTENSION = 'vspyprof';
+const FORMAT = 'vspyprof';
 
 export async function readProfile(file: string): Promise<Delta> {
   const raw = await fs.promises.readFile(file);
@@ -18,10 +18,10 @@ export async function readProfile(file: string): Promise<Delta> {
   try {
     data = JSON.parse(text);
   } catch {
-    throw new Error(`${file} is not a .pyprof file (invalid JSON)`);
+    throw new Error(`${file} is not a .vspyprof file (invalid JSON)`);
   }
   if (typeof data !== 'object' || data === null || (data as { format?: unknown }).format !== FORMAT) {
-    throw new Error(`${file} is not a .pyprof file`);
+    throw new Error(`${file} is not a .vspyprof file`);
   }
   return data as Delta;
 }

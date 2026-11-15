@@ -136,7 +136,7 @@ test('defaultConfiguration fastapi serves the app with uvicorn', () => {
 });
 
 test('defaultConfiguration attach picks the process', () => {
-  assert.equal(defaultConfiguration('attach').processId, '${command:pyprof.pickProcess}');
+  assert.equal(defaultConfiguration('attach').processId, '${command:vspyprof.pickProcess}');
 });
 
 test('defaultConfiguration every choice parses as a launch config', () => {

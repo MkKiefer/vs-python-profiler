@@ -2,19 +2,19 @@ import os
 import unittest
 from dataclasses import replace
 
-from _vscode_pyprof.agent_protocol.replies import Allocation, HeapSnapshot, SourceLine
-from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
-from _vscode_pyprof.collector.frames.func_resolver import FuncResolver
-from _vscode_pyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
-from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.collector.store.memory_snapshot import AllocationSite
-from _vscode_pyprof.collector.store.session_clock import SessionClock
-from _vscode_pyprof.collector.store.stack_table import StackTable
-from _vscode_pyprof.collector.store.store import Store
+from _vspyprof.agent_protocol.replies import Allocation, HeapSnapshot, SourceLine
+from _vspyprof.collector.frames.frame_classifier import FrameClassifier
+from _vspyprof.collector.frames.func_resolver import FuncResolver
+from _vspyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
+from _vspyprof.collector.options import CollectorOptions
+from _vspyprof.collector.store.memory_snapshot import AllocationSite
+from _vspyprof.collector.store.session_clock import SessionClock
+from _vspyprof.collector.store.stack_table import StackTable
+from _vspyprof.collector.store.store import Store
 from tests.unit.json_view import JsonView
 
 ROOT = os.path.abspath(os.sep)
-INTERNAL_DIR = os.path.join(ROOT, "ext", "_vscode_pyprof")
+INTERNAL_DIR = os.path.join(ROOT, "ext", "_vspyprof")
 LAUNCHER = os.path.join(INTERNAL_DIR, "launcher.py")
 
 

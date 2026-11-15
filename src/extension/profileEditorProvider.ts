@@ -3,9 +3,9 @@ import type { Dashboards } from './dashboards';
 import type { SessionManager } from './sessionManager';
 import { errorMessage } from '../shared/errors';
 
-/** Opens `.pyprof` files in the dashboard (double-click in the explorer). */
+/** Opens `.vspyprof` files in the dashboard (double-click in the explorer). */
 export class ProfileEditorProvider implements vscode.CustomReadonlyEditorProvider {
-  static readonly viewType = 'pyprof.profileViewer';
+  static readonly viewType = 'vspyprof.profileViewer';
 
   constructor(
     private readonly sessions: SessionManager,

@@ -8,7 +8,7 @@ import type { SessionManager } from './sessionManager';
 import { errorMessage } from '../shared/errors';
 import type { AttachOptions } from '../shared/protocol';
 
-/** One record printed by `python/_vscode_pyprof/processes.py`. */
+/** One record printed by `python/_vspyprof/processes.py`. */
 export interface ProcInfo {
   pid: number;
   ppid: number;
@@ -25,7 +25,7 @@ export interface ProcInfo {
 
 type ProcessItem = vscode.QuickPickItem & { process?: ProcInfo };
 
-const OWN_PROCESS_MARKERS = ['_vscode_pyprof.collector.cli', 'processes.py'];
+const OWN_PROCESS_MARKERS = ['_vspyprof.collector.cli', 'processes.py'];
 const LIST_TIMEOUT_MS = 20_000;
 
 export class ProcessPicker {
@@ -114,7 +114,7 @@ export class ProcessPicker {
     if (process) await this.attach(process);
   }
 
-  /** For `${command:pyprof.pickProcess}` in launch configurations. */
+  /** For `${command:vspyprof.pickProcess}` in launch configurations. */
   async pickPid(): Promise<string | undefined> {
     return (await this.pick())?.pid.toString();
   }

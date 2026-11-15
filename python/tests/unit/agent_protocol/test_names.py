@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from _vscode_pyprof.agent_protocol.names import EventKind
+from _vspyprof.agent_protocol.names import EventKind
 
 
 class TestEventKind(unittest.TestCase):

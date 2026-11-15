@@ -17,9 +17,9 @@ import { MockHostClient } from '../../../src/webview/services/mockHostClient';
 
 export type Fixture = 'cpu' | 'leaky' | 'async';
 
-/** A recorded `.pyprof` profile from test/fixtures. */
+/** A recorded `.vspyprof` profile from test/fixtures. */
 export function loadDelta(name: Fixture): Delta {
-  const file = path.resolve(__dirname, '..', '..', 'fixtures', `${name}.pyprof`);
+  const file = path.resolve(__dirname, '..', '..', 'fixtures', `${name}.vspyprof`);
   return JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString()) as Delta;
 }
 

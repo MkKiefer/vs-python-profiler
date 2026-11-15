@@ -6,47 +6,47 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, create_autospec
 
-from _vscode_pyprof import PROTOCOL_VERSION
-from _vscode_pyprof.agent_protocol import commands
-from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
-from _vscode_pyprof.agent_protocol.messages import FROM_AGENT, TO_AGENT
-from _vscode_pyprof.agent_protocol.metrics import AgentEvent, AgentMetrics, EventDetails, LoopMetrics, TracedMemory
-from _vscode_pyprof.agent_protocol.options import AgentOptions
-from _vscode_pyprof.agent_protocol.replies import (
+from _vspyprof import PROTOCOL_VERSION
+from _vspyprof.agent_protocol import commands
+from _vspyprof.agent_protocol.hello import AgentHello, ThreadName
+from _vspyprof.agent_protocol.messages import FROM_AGENT, TO_AGENT
+from _vspyprof.agent_protocol.metrics import AgentEvent, AgentMetrics, EventDetails, LoopMetrics, TracedMemory
+from _vspyprof.agent_protocol.options import AgentOptions
+from _vspyprof.agent_protocol.replies import (
     Allocation,
     AsyncioDebugStatus,
     HeapSnapshot,
     SourceLine,
     TracingStatus,
 )
-from _vscode_pyprof.collector import requests
-from _vscode_pyprof.collector.agent.connection import AgentConnection
-from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
-from _vscode_pyprof.collector.agent.server import AgentServer
-from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
-from _vscode_pyprof.collector.frames.func_resolver import FuncResolver
-from _vscode_pyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
-from _vscode_pyprof.collector.messages import FROM_EXTENSION
-from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.collector.profile_writer import ProfileWriter
-from _vscode_pyprof.collector.protocol import StopReason
-from _vscode_pyprof.collector.rpc import RpcError, RpcServer
-from _vscode_pyprof.collector.rpc_results import (
+from _vspyprof.collector import requests
+from _vspyprof.collector.agent.connection import AgentConnection
+from _vspyprof.collector.agent.injector import AgentInjectionError, AgentInjector
+from _vspyprof.collector.agent.server import AgentServer
+from _vspyprof.collector.frames.frame_classifier import FrameClassifier
+from _vspyprof.collector.frames.func_resolver import FuncResolver
+from _vspyprof.collector.memory_snapshot_builder import MemorySnapshotBuilder
+from _vspyprof.collector.messages import FROM_EXTENSION
+from _vspyprof.collector.options import CollectorOptions
+from _vspyprof.collector.profile_writer import ProfileWriter
+from _vspyprof.collector.protocol import StopReason
+from _vspyprof.collector.rpc import RpcError, RpcServer
+from _vspyprof.collector.rpc_results import (
     AttachResult,
     InitializeResult,
     SaveResult,
     SnapshotResult,
     StatusResult,
 )
-from _vscode_pyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
-from _vscode_pyprof.collector.sampling.sampler import Sampler
-from _vscode_pyprof.collector.sampling.sampler_factory import SamplerFactory
-from _vscode_pyprof.collector.sampling.tachyon import TachyonError
-from _vscode_pyprof.collector.session import CollectorSession
-from _vscode_pyprof.collector.store.session_clock import SessionClock
-from _vscode_pyprof.collector.store.stack_table import StackTable
-from _vscode_pyprof.collector.store.store import Store
-from _vscode_pyprof.wire import JsonObject, LineBuffer, WireDecoder, WireEncoder
+from _vspyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
+from _vspyprof.collector.sampling.sampler import Sampler
+from _vspyprof.collector.sampling.sampler_factory import SamplerFactory
+from _vspyprof.collector.sampling.tachyon import TachyonError
+from _vspyprof.collector.session import CollectorSession
+from _vspyprof.collector.store.session_clock import SessionClock
+from _vspyprof.collector.store.stack_table import StackTable
+from _vspyprof.collector.store.store import Store
+from _vspyprof.wire import JsonObject, LineBuffer, WireDecoder, WireEncoder
 from tests.unit.json_view import JsonView
 
 
@@ -242,7 +242,7 @@ class TestCollectorSession(unittest.TestCase):
 
     def test_mark_then_save_writes_marker_to_profile_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "nested", "run.pyprof")
+            path = os.path.join(directory, "nested", "run.vspyprof")
             self.session.run(requests.Mark(name="deploy"))
 
             result = self.session.run(requests.Save(path))
@@ -250,7 +250,7 @@ class TestCollectorSession(unittest.TestCase):
             with gzip.open(path, "rt", encoding="utf-8") as f:
                 profile = JsonView.of(json.load(f))
             self.assertEqual(result, SaveResult(path, os.path.getsize(path)))
-        self.assertEqual(profile.get_str("format"), "pyprof")
+        self.assertEqual(profile.get_str("format"), "vspyprof")
         self.assertEqual([m[1] for m in profile.get_list("markers") if isinstance(m, list)], ["deploy"])
 
     def test_stop_notifies_stopped_state(self) -> None:

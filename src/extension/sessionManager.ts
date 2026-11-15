@@ -2,7 +2,7 @@
  * Owns all sessions and the two ways a live one starts. Every live path ends
  * in the same place – a collector process running with the *target's* interpreter:
  *
- *   launch   : collector first → terminal runs our launcher with PYPROF_AGENT
+ *   launch   : collector first → terminal runs our launcher with VSPYPROF_AGENT
  *              → launcher's agent says hello (pid) → collector starts sampling
  *   attach   : collector → attach(pid) → optional sys.remote_exec agent injection
  */
@@ -36,7 +36,7 @@ export interface SavedProfile {
 }
 
 const STARTUP_TIMEOUT_MS = 20_000;
-const LIVE_CONTEXT_KEY = 'pyprof.hasLiveSession';
+const LIVE_CONTEXT_KEY = 'vspyprof.hasLiveSession';
 
 export class SessionManager implements vscode.Disposable {
   private readonly all: Session[] = [];
@@ -100,8 +100,8 @@ export class SessionManager implements vscode.Disposable {
         cwd: spec.cwd,
         env: {
           ...spec.env,
-          PYPROF_AGENT: info.agentAddress,
-          PYPROF_OPTIONS: info.agentOptions,
+          VSPYPROF_AGENT: info.agentAddress,
+          VSPYPROF_OPTIONS: info.agentOptions,
           PYTHONUNBUFFERED: spec.env?.PYTHONUNBUFFERED ?? '1',
         },
         iconPath: new vscode.ThemeIcon('flame'),

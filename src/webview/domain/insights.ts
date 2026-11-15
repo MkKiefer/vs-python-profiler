@@ -130,7 +130,7 @@ export function computeInsights({ model: m, capabilities, state, counts, total }
     out.push({
       id: 'torn-samples',
       severity: 'warn',
-      text: `${fmtPct(m.stats.errors, m.stats.samples)} of samples were discarded because stacks changed while being read. Enable "pyprof.blockingSampling" for consistent samples.`,
+      text: `${fmtPct(m.stats.errors, m.stats.samples)} of samples were discarded because stacks changed while being read. Enable "vspyprof.blockingSampling" for consistent samples.`,
     });
   }
 

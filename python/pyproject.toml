@@ -1,5 +1,5 @@
 [project]
-name = "vscode-pyprof-collector"
+name = "vspyprof-collector"
 version = "0.1.0"
 description = "Collector (collector/) and in-program launcher and agent (target/) of the Python Profiler VS Code extension"
 requires-python = ">=3.15"
@@ -17,11 +17,11 @@ dev = [
 
 [tool.pdm.scripts]
 _.env = { PYTHONPATH = "." }
-lint = "ruff check _vscode_pyprof tests"
-fmt = "ruff format _vscode_pyprof tests"
-"fmt:check" = "ruff format --check _vscode_pyprof tests"
-typecheck = "mypy _vscode_pyprof tests/unit"
-deadcode = "vulture _vscode_pyprof tests/unit"
+lint = "ruff check _vspyprof tests"
+fmt = "ruff format _vspyprof tests"
+"fmt:check" = "ruff format --check _vspyprof tests"
+typecheck = "mypy _vspyprof tests/unit"
+deadcode = "vulture _vspyprof tests/unit"
 test = "python -m unittest discover -s tests/unit -t ."
 "test:integration" = "python -W ignore -m unittest discover -s tests/integration -t ."
 check = { composite = ["lint", "fmt:check", "typecheck", "deadcode", "test"] }
@@ -33,12 +33,12 @@ line-length = 120
 # These run with whatever interpreter the user has (to list processes or to report
 # a clear "Python 3.15 required" error), so they must stay valid on Python 3.10.
 [tool.ruff.per-file-target-version]
-"_vscode_pyprof/__init__.py" = "py310"
-"_vscode_pyprof/processes.py" = "py310"
-"_vscode_pyprof/collector/__init__.py" = "py310"
-"_vscode_pyprof/collector/cli.py" = "py310"
-"_vscode_pyprof/target/__init__.py" = "py310"
-"_vscode_pyprof/target/launcher.py" = "py310"
+"_vspyprof/__init__.py" = "py310"
+"_vspyprof/processes.py" = "py310"
+"_vspyprof/collector/__init__.py" = "py310"
+"_vspyprof/collector/cli.py" = "py310"
+"_vspyprof/target/__init__.py" = "py310"
+"_vspyprof/target/launcher.py" = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC"]

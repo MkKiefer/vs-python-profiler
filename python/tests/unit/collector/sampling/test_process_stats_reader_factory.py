@@ -2,11 +2,11 @@ import os
 import sys
 import unittest
 
-from _vscode_pyprof.collector.sampling.linux_stats_reader import LinuxProcessStatsReader
-from _vscode_pyprof.collector.sampling.process_stats import ProcessStatsReader
-from _vscode_pyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
-from _vscode_pyprof.collector.sampling.ps_stats_reader import PsProcessStatsReader
-from _vscode_pyprof.collector.sampling.windows_stats_reader import WindowsProcessStatsReader
+from _vspyprof.collector.sampling.linux_stats_reader import LinuxProcessStatsReader
+from _vspyprof.collector.sampling.process_stats import ProcessStatsReader
+from _vspyprof.collector.sampling.process_stats_reader_factory import ProcessStatsReaderFactory
+from _vspyprof.collector.sampling.ps_stats_reader import PsProcessStatsReader
+from _vspyprof.collector.sampling.windows_stats_reader import WindowsProcessStatsReader
 
 
 class TestProcessStatsReaderFactory(unittest.TestCase):

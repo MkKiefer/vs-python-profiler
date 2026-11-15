@@ -1,8 +1,8 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.messages import TO_AGENT
-from _vscode_pyprof.agent_protocol.options import AgentOptions
-from _vscode_pyprof.wire import WireDecoder, WireEncoder
+from _vspyprof.agent_protocol.messages import TO_AGENT
+from _vspyprof.agent_protocol.options import AgentOptions
+from _vspyprof.wire import WireDecoder, WireEncoder
 
 
 class TestAgentOptions(unittest.TestCase):

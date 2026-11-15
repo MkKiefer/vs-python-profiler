@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.collector.sampling.ps_stats_reader import PsProcessStatsReader
+from _vspyprof.collector.sampling.ps_stats_reader import PsProcessStatsReader
 
 
 class TestPsProcessStatsReader(unittest.TestCase):

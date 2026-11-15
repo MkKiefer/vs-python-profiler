@@ -45,7 +45,7 @@ type ActionItem = vscode.QuickPickItem & { run?: () => Promise<void> };
 const isPythonFile = (uri: vscode.Uri): boolean => uri.scheme === 'file' && uri.fsPath.endsWith('.py');
 
 /**
- * The Python file the user means by "current file". A dashboard or a saved .pyprof
+ * The Python file the user means by "current file". A dashboard or a saved .vspyprof
  * opened from the Sessions view takes focus, leaving no active text editor, so fall
  * back to a Python file that is still visible, then to the open Python tabs.
  */

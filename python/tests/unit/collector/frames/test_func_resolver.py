@@ -3,7 +3,7 @@ import tempfile
 import textwrap
 import unittest
 
-from _vscode_pyprof.collector.frames.func_resolver import FuncResolver
+from _vspyprof.collector.frames.func_resolver import FuncResolver
 
 SOURCE = textwrap.dedent(
     """\

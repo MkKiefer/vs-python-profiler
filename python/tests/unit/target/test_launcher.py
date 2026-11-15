@@ -5,7 +5,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-from _vscode_pyprof.target.launcher import Launcher, LauncherError, Target, TargetKind
+from _vspyprof.target.launcher import Launcher, LauncherError, Target, TargetKind
 
 
 class TestTargetParse(unittest.TestCase):
@@ -51,7 +51,7 @@ class TestLauncher(unittest.TestCase):
             Launcher().main(["definitely-not-a-file-xyz.py"])
 
         self.assertEqual(ctx.exception.code, Launcher.EXIT_ERROR)
-        self.assertIn("pyprof: cannot find", errors.getvalue())
+        self.assertIn("vspyprof: cannot find", errors.getvalue())
 
     def test_main_without_agent_address_exits_with_error_code(self) -> None:
         errors = io.StringIO()
@@ -61,11 +61,11 @@ class TestLauncher(unittest.TestCase):
             redirect_stderr(errors),
             self.assertRaises(SystemExit) as ctx,
         ):
-            os.environ.pop("PYPROF_AGENT", None)
+            os.environ.pop("VSPYPROF_AGENT", None)
             Launcher().main(["-m", "json.tool"])
 
         self.assertEqual(ctx.exception.code, Launcher.EXIT_ERROR)
-        self.assertIn("PYPROF_AGENT is not set", errors.getvalue())
+        self.assertIn("VSPYPROF_AGENT is not set", errors.getvalue())
 
 
 if __name__ == "__main__":

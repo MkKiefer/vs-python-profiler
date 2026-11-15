@@ -17,7 +17,7 @@ jobs:
       - run: npm run check
         env:
           # enables test/session.integration.test.ts (real collector + target)
-          PYPROF_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
+          VSPYPROF_TEST_PYTHON: ${{ steps.python.outputs.python-path }}
 
   collector:
     strategy:

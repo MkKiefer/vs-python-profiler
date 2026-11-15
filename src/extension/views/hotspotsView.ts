@@ -73,7 +73,7 @@ export class HotspotsView implements vscode.TreeDataProvider<HotspotNode>, vscod
     item.tooltip = `${fn.func}\n${fn.file}:${fn.minLine}\n\nself ${node.self} samples, total ${node.total} samples`;
     item.iconPath = new vscode.ThemeIcon('flame', new vscode.ThemeColor(CATEGORY_COLOR[fn.cat]));
     if (!isSyntheticFile(fn.file)) {
-      item.command = { command: 'pyprof.revealFunction', title: 'Show', arguments: [node.session.id, node.fn, true] };
+      item.command = { command: 'vspyprof.revealFunction', title: 'Show', arguments: [node.session.id, node.fn, true] };
     }
     return item;
   }

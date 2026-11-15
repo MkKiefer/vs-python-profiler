@@ -1,9 +1,9 @@
 import threading
 import unittest
 
-from _vscode_pyprof.agent_protocol.commands import CountObjects, Ping, TakeSnapshot
-from _vscode_pyprof.agent_protocol.replies import ObjectCounts, Pong, TypeCount
-from _vscode_pyprof.collector.agent.connection import AgentError
+from _vspyprof.agent_protocol.commands import CountObjects, Ping, TakeSnapshot
+from _vspyprof.agent_protocol.replies import ObjectCounts, Pong, TypeCount
+from _vspyprof.collector.agent.connection import AgentError
 from tests.unit.collector.agent.agent_link_harness import AgentLinkTestCase
 
 

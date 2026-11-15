@@ -2,11 +2,11 @@ import os
 import unittest
 from _remote_debugging import FrameInfo, LocationInfo
 
-from _vscode_pyprof.collector.frames.frame_classifier import FrameCategory, FrameClassifier
-from _vscode_pyprof.collector.store.stack_table import InternedStack, SourceFrame, StackTable
+from _vspyprof.collector.frames.frame_classifier import FrameCategory, FrameClassifier
+from _vspyprof.collector.store.stack_table import InternedStack, SourceFrame, StackTable
 
 ROOT = os.path.abspath(os.sep)
-INTERNAL_DIR = os.path.join(ROOT, "ext", "_vscode_pyprof")
+INTERNAL_DIR = os.path.join(ROOT, "ext", "_vspyprof")
 APP = os.path.join(ROOT, "work", "app.py")
 LAUNCHER = os.path.join(INTERNAL_DIR, "launcher.py")
 AGENT = os.path.join(INTERNAL_DIR, "agent.py")

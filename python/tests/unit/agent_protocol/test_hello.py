@@ -1,8 +1,8 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.hello import AgentHello, ThreadName
-from _vscode_pyprof.agent_protocol.messages import FROM_AGENT
-from _vscode_pyprof.wire import WireDecoder, WireEncoder
+from _vspyprof.agent_protocol.hello import AgentHello, ThreadName
+from _vspyprof.agent_protocol.messages import FROM_AGENT
+from _vspyprof.wire import WireDecoder, WireEncoder
 
 
 class TestThreadName(unittest.TestCase):

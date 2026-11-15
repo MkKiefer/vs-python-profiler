@@ -1,9 +1,9 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.options import AgentOptions
-from _vscode_pyprof.collector.messages import FROM_EXTENSION
-from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.wire import WireDecoder, WireEncoder
+from _vspyprof.agent_protocol.options import AgentOptions
+from _vspyprof.collector.messages import FROM_EXTENSION
+from _vspyprof.collector.options import CollectorOptions
+from _vspyprof.wire import WireDecoder, WireEncoder
 
 
 class TestCollectorOptions(unittest.TestCase):

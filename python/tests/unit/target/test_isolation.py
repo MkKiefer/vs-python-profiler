@@ -1,6 +1,6 @@
 """The code that runs inside the profiled program stays apart from the collector.
 
-Whatever ``_vscode_pyprof.target`` imports is loaded into the user's program, so
+Whatever ``_vspyprof.target`` imports is loaded into the user's program, so
 it may use only itself, the package root and the modules it shares with the
 collector (``wire``, ``agent_protocol``), and it must not load stdlib modules the
 program may not use itself (the agent's ``lazy`` imports).
@@ -12,10 +12,10 @@ import subprocess
 import sys
 import unittest
 
-from _vscode_pyprof import PACKAGE_DIR
+from _vspyprof import PACKAGE_DIR
 
-SHARED = ("_vscode_pyprof", "_vscode_pyprof.wire")
-SHARED_PACKAGES = ("_vscode_pyprof.agent_protocol", "_vscode_pyprof.target")
+SHARED = ("_vspyprof", "_vspyprof.wire")
+SHARED_PACKAGES = ("_vspyprof.agent_protocol", "_vspyprof.target")
 # what a profile shows, and what the agent's "does the program use asyncio?" check reads
 FEATURE_MODULES = {"asyncio", "logging", "tracemalloc", "warnings"}
 
@@ -41,23 +41,23 @@ class TestTargetIsolation(unittest.TestCase):
         return {
             name
             for name in self.modules_loaded_by(module)
-            if name.startswith("_vscode_pyprof")
+            if name.startswith("_vspyprof")
             and name not in SHARED
             and not any(name == package or name.startswith(package + ".") for package in SHARED_PACKAGES)
         }
 
     def test_agent_import_loads_no_collector_code(self) -> None:
-        self.assertEqual(self.foreign_package_modules_loaded_by("_vscode_pyprof.target.agent"), set())
+        self.assertEqual(self.foreign_package_modules_loaded_by("_vspyprof.target.agent"), set())
 
     def test_launcher_import_loads_no_collector_code(self) -> None:
-        self.assertEqual(self.foreign_package_modules_loaded_by("_vscode_pyprof.target.launcher"), set())
+        self.assertEqual(self.foreign_package_modules_loaded_by("_vspyprof.target.launcher"), set())
 
     def test_launcher_import_does_not_load_the_agent(self) -> None:
-        loaded = self.modules_loaded_by("_vscode_pyprof.target.launcher")
+        loaded = self.modules_loaded_by("_vspyprof.target.launcher")
 
-        self.assertNotIn("_vscode_pyprof.target.agent", loaded)
+        self.assertNotIn("_vspyprof.target.agent", loaded)
 
     def test_agent_import_leaves_feature_modules_unloaded(self) -> None:
-        loaded = self.modules_loaded_by("_vscode_pyprof.target.agent")
+        loaded = self.modules_loaded_by("_vspyprof.target.agent")
 
         self.assertEqual(loaded & FEATURE_MODULES, set())

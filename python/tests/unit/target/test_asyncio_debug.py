@@ -3,9 +3,9 @@ import unittest
 import warnings
 from typing import TextIO
 
-from _vscode_pyprof.agent_protocol.metrics import AgentEvent
-from _vscode_pyprof.agent_protocol.names import EventKind
-from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
+from _vspyprof.agent_protocol.metrics import AgentEvent
+from _vspyprof.agent_protocol.names import EventKind
+from _vspyprof.target.asyncio_debug import AsyncioDebugCapture
 
 
 class TestAsyncioDebugCapture(unittest.TestCase):

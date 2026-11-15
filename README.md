@@ -12,7 +12,7 @@ is installed into your environment and your code needs no changes.
 - **asyncio**: task timeline (Gantt), async-aware flame graph, **event-loop lag**, asyncio debug mode (slow callbacks, never-awaited coroutines)
 - **Editor integration**: per-line heat in the gutter, inline timings and CodeLens on hot functions. These follow the dashboard's time range, mode and thread filter
 - **Timeline**: threads (on-CPU and GIL waits), GC, CPU, memory and loop lag on one time axis. Drag to zoom every view
-- Saved `.pyprof` files open in the dashboard. Export to speedscope or collapsed stacks
+- Saved `.vspyprof` files open in the dashboard. Export to speedscope or collapsed stacks
 
 ## Starting a profile
 
@@ -50,12 +50,12 @@ VS Code extension host (TypeScript, src/extension)        Webview dashboard (Vue
  ├ EnvironmentResolver ← ms-python API (interpreter per resource, .env)   │ (init + deltas)
  ├ LaunchAdapter       ← debugpy configs, python-profiler debug type      │
  ├ SessionManager / Session / CollectorClient ─────────────────────────────┘
- ├ SessionActions · Commands (every pyprof.* command)
+ ├ SessionActions · Commands (every vspyprof.* command)
  ├ Dashboards · EditorHeat (decorations, CodeLens) · views/ · StatusBar
  │
  │ JSON-lines RPC over stdio            contract: src/shared/protocol.ts
  ▼
-python/_vscode_pyprof/
+python/_vspyprof/
  ├ collector/          runs in the collector process (python -I, *target's* interpreter, stdlib only)
  │ ├ cli.py            entry point and composition root
  │ ├ session.py        the RPC API (CollectorSession); ties sampler, agent link and store together
@@ -63,11 +63,11 @@ python/_vscode_pyprof/
  │ ├ rpc_params.py · rpc_results.py · notifications.py   what the extension sends, what the collector answers
  │ │                   and pushes, as dataclasses
  │ ├ rpc.py · options.py   JSON-lines RPC over stdio · session options
- │ ├ memory_snapshot_builder.py · profile_writer.py   agent snapshot reply → stored snapshot · .pyprof files
+ │ ├ memory_snapshot_builder.py · profile_writer.py   agent snapshot reply → stored snapshot · .vspyprof files
  │ ├ sampling/         sampler.py (fixed-rate loop: stacks, async stacks, task graph, children), gc_recorder.py,
  │ │                   sampler_factory.py, process_stats.py + one RSS/CPU reader per OS,
  │ │                   tachyon.py - the only module that touches _remote_debugging
- │ ├ store/            store.py (thread-safe facade → deltas / .pyprof) over stack_table.py (interned frames +
+ │ ├ store/            store.py (thread-safe facade → deltas / .vspyprof) over stack_table.py (interned frames +
  │ │                   stack prefix tree), sample_columns.py, task_table.py, memory_snapshot.py, append_log.py,
  │ │                   session_clock.py, track.py, sampling_stats.py, profile_meta.py, timeline_event.py, async_stack.py
  │ ├ frames/           frame_classifier.py (file → user / library / stdlib / internal),
@@ -88,7 +88,7 @@ python/_vscode_pyprof/
 - **One data model.** The collector's store and the TypeScript `ProfileModel`
   (`src/shared/model.ts`) share one schema: frames, stack prefix tree, samples
   (`t, tid, stack, status`), tracks, tasks, snapshots and events. Live deltas and
-  `.pyprof` files (gzip JSON) have the same shape.
+  `.vspyprof` files (gzip JSON) have the same shape.
 - **One wire contract.** Every message that crosses a process boundary (webview ⇄
   extension ⇄ collector) is declared in
   `src/shared/protocol.ts`. Both Python streams (extension ⇄ collector over stdio,
@@ -144,14 +144,14 @@ pdm run test:integration   # collector end-to-end: launch, attach+inject, memory
 |---|---|
 | `test/*.test.ts` | profile model and exporters against recorded profiles (`test/fixtures`), launch-config parsing, formatting, and an activation smoke test that loads the extension against a stub of the VS Code API |
 | `test/webview/*.spec.ts` | the dashboard: every spec mounts the whole app (real router and stores) over `MockHostClient` through `mountApp(path, …)`; `smoke.spec.ts` opens every route with every fixture, saved and live, and any Vue warning or console error fails a test; feature specs drive tabs, commands, filters and live updates; unit specs cover the host client, persisted state and insights |
-| `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `PYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`PYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
+| `test/session.integration.test.ts` | the TypeScript session layer against a real collector and target: attach, samples, stop, auto-save, remove, reopen. Skipped unless `VSPYPROF_TEST_PYTHON` points to a Python 3.15 interpreter (`VSPYPROF_TEST_PYTHON=python/.venv/bin/python npm test`) |
 | `python/tests/unit/` | mirrors the package (`collector/…`, `target/`): one test module per source module, plus `target/test_isolation.py`, which fails if code that runs inside the profiled program starts importing collector code; no target process needed |
 | `python/tests/integration/` | drives a real collector over stdio exactly like the extension, profiling the programs in `test-apps/` |
 
 Press **F5** ("Run Extension") to open an Extension Development Host on `test-apps/`
 (`cpu_bound.py`, `leaky.py`, `async_storm.py`).
 
-Settings are under `pyprof.*`: sampling rate, blocking sampling, tracemalloc on start
+Settings are under `vspyprof.*`: sampling rate, blocking sampling, tracemalloc on start
 and frames, asyncio debug and slow-callback threshold, heat map metric, CodeLens,
 child-process handling and auto-save. `src/extension/settings.ts`
 is the only module that reads them.
@@ -181,7 +181,7 @@ the collector's own Python 3.15 process:
 | Module-level entry points | `collector.cli.main`, `target.launcher.main`, `target.agent.start` | Called by name from the extension's `python -c` bootstraps and from `sys.remote_exec`; they only delegate to a class. |
 | Plain class instead of a dataclass | `target/loop_monitor._LoopProbe` | `@dataclass` evaluates field annotations at import; its `asyncio` annotation would load `asyncio` into a program that does not use it (`test_isolation.py` fails if it does). |
 | Dataclasses without `slots=True` | `agent_protocol/` | The package is imported inside the profiled program (on its main thread when attaching). Slotted dataclasses rebuild every class and load `inspect`; plain frozen dataclasses keep the one-time import pause short. |
-| JSON objects as `dict[str, object]` | `wire.py`, the store classes' `to_profile()`, `Store.delta()` / `full()` (the `.pyprof` format), the `Delta` notification and `ProfileWriter` | JSON exists only at the wire edge and in the profile format. Between classes, data travels as a message dataclass (requests / results, notifications, agent commands / hello / metrics / replies, options) or another named type; names with a fixed set of values are enums. |
+| JSON objects as `dict[str, object]` | `wire.py`, the store classes' `to_profile()`, `Store.delta()` / `full()` (the `.vspyprof` format), the `Delta` notification and `ProfileWriter` | JSON exists only at the wire edge and in the profile format. Between classes, data travels as a message dataclass (requests / results, notifications, agent commands / hello / metrics / replies, options) or another named type; names with a fixed set of values are enums. |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
 
 The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of

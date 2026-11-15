@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.collector.store.task_table import TaskObservation, TaskRecord, TaskState, TaskTable
+from _vspyprof.collector.store.task_table import TaskObservation, TaskRecord, TaskState, TaskTable
 
 
 class TaskTestCase(unittest.TestCase):

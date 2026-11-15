@@ -4,7 +4,7 @@ import sys
 import unittest
 from unittest import mock
 
-from _vscode_pyprof.collector.agent.injector import AgentInjectionError, AgentInjector
+from _vspyprof.collector.agent.injector import AgentInjectionError, AgentInjector
 
 _OPTIONS = '{"type":"AgentOptions","tracemalloc":true}'
 

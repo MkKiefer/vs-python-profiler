@@ -2,20 +2,20 @@ import os
 import unittest
 from _remote_debugging import AwaitedInfo, CoroInfo, FrameInfo, InterpreterInfo, LocationInfo, TaskInfo, ThreadInfo
 
-from _vscode_pyprof.agent_protocol.metrics import EventDetails
-from _vscode_pyprof.agent_protocol.replies import ObjectCounts, TypeCount
-from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
-from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.collector.store.async_stack import AsyncStack
-from _vscode_pyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
-from _vscode_pyprof.collector.store.session_clock import SessionClock
-from _vscode_pyprof.collector.store.stack_table import SourceFrame, StackTable
-from _vscode_pyprof.collector.store.store import Store
-from _vscode_pyprof.collector.store.track import Track
+from _vspyprof.agent_protocol.metrics import EventDetails
+from _vspyprof.agent_protocol.replies import ObjectCounts, TypeCount
+from _vspyprof.collector.frames.frame_classifier import FrameClassifier
+from _vspyprof.collector.options import CollectorOptions
+from _vspyprof.collector.store.async_stack import AsyncStack
+from _vspyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
+from _vspyprof.collector.store.session_clock import SessionClock
+from _vspyprof.collector.store.stack_table import SourceFrame, StackTable
+from _vspyprof.collector.store.store import Store
+from _vspyprof.collector.store.track import Track
 from tests.unit.json_view import JsonView
 
 ROOT = os.path.abspath(os.sep)
-INTERNAL_DIR = os.path.join(ROOT, "ext", "_vscode_pyprof")
+INTERNAL_DIR = os.path.join(ROOT, "ext", "_vspyprof")
 APP = os.path.join(ROOT, "work", "app.py")
 LAUNCHER = os.path.join(INTERNAL_DIR, "launcher.py")
 AGENT = os.path.join(INTERNAL_DIR, "agent.py")
@@ -304,7 +304,7 @@ class TestStoreDeltas(StoreTestCase):
         self.assertEqual(full.get_raw("threads"), {"1": "MainThread"})
         self.assertEqual(len(full.get_list("snapshots")), 1)
 
-    def test_full_is_tagged_as_pyprof_file(self) -> None:
+    def test_full_is_tagged_as_vspyprof_file(self) -> None:
         full = JsonView(self.store.full())
 
         self.assertEqual((full.get_str("format"), full.get_int("version")), (Store.FORMAT, Store.FORMAT_VERSION))

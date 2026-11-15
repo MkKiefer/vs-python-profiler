@@ -3,7 +3,7 @@ import unittest
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from _vscode_pyprof.wire import LineBuffer, Request, Response, WireDecoder, WireEncoder, WireError
+from _vspyprof.wire import LineBuffer, Request, Response, WireDecoder, WireEncoder, WireError
 
 
 class _Color(StrEnum):

@@ -1,8 +1,8 @@
 /**
  * The TypeScript session layer against a real collector and a real target program.
  *
- * Needs a Python 3.15 interpreter: set PYPROF_TEST_PYTHON to its path, e.g.
- *   PYPROF_TEST_PYTHON=python/.venv/bin/python npm test
+ * Needs a Python 3.15 interpreter: set VSPYPROF_TEST_PYTHON to its path, e.g.
+ *   VSPYPROF_TEST_PYTHON=python/.venv/bin/python npm test
  * Without it the tests are skipped.
  */
 import { after, before, test } from 'node:test';
@@ -20,8 +20,8 @@ import { window } from './support/vscodeStub';
 
 // tests are bundled into dist-test/, one level below the repository root
 const ROOT = path.join(__dirname, '..');
-const python = process.env.PYPROF_TEST_PYTHON ? path.resolve(process.env.PYPROF_TEST_PYTHON) : undefined;
-const skip = python ? false : 'set PYPROF_TEST_PYTHON to a Python 3.15 interpreter to run';
+const python = process.env.VSPYPROF_TEST_PYTHON ? path.resolve(process.env.VSPYPROF_TEST_PYTHON) : undefined;
+const skip = python ? false : 'set VSPYPROF_TEST_PYTHON to a Python 3.15 interpreter to run';
 
 let storage: string;
 let sessions: SessionManager;
@@ -38,7 +38,7 @@ async function until(condition: () => boolean, what: string, timeoutMs = 15_000)
 
 before(async () => {
   if (!python) return;
-  storage = fs.mkdtempSync(path.join(os.tmpdir(), 'pyprof-session-'));
+  storage = fs.mkdtempSync(path.join(os.tmpdir(), 'vspyprof-session-'));
   sessions = new SessionManager(new ExtPaths(ROOT), window.createOutputChannel() as unknown as LogOutputChannel, storage);
   target = spawn(python, [path.join(ROOT, 'test-apps', 'cpu_bound.py'), '30'], { stdio: 'ignore' });
   await new Promise((resolve) => setTimeout(resolve, 500)); // let the interpreter start

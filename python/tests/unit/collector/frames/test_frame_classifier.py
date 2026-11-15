@@ -1,8 +1,8 @@
 import os
 import unittest
 
-from _vscode_pyprof import PACKAGE_DIR
-from _vscode_pyprof.collector.frames.frame_classifier import FrameCategory, FrameClassifier
+from _vspyprof import PACKAGE_DIR
+from _vspyprof.collector.frames.frame_classifier import FrameCategory, FrameClassifier
 
 
 class TestFrameClassifier(unittest.TestCase):
@@ -10,7 +10,7 @@ class TestFrameClassifier(unittest.TestCase):
         self.root = os.path.abspath(os.sep)
         self.std_dir = os.path.join(self.root, "py", "lib")
         self.lib_dir = os.path.join(self.std_dir, "site-packages")
-        self.internal_dir = os.path.join(self.root, "ext", "_vscode_pyprof")
+        self.internal_dir = os.path.join(self.root, "ext", "_vspyprof")
         self.classifier = FrameClassifier([self.std_dir], [self.lib_dir], self.internal_dir)
 
     def test_category_with_site_packages_file_returns_library(self) -> None:

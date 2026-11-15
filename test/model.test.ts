@@ -19,7 +19,7 @@ test('launcher and runpy frames do not leak into user stacks', () => {
 
   const files = new Set([...m.countStacks({}).keys()].flatMap((sid) => m.path(sid).map((frame) => m.frames[frame].file)));
 
-  assert.deepEqual([...files].filter((file) => file.includes('_vscode_pyprof') || file.includes('runpy')), []);
+  assert.deepEqual([...files].filter((file) => file.includes('_vspyprof') || file.includes('runpy')), []);
 });
 
 test('call tree totals equal the number of samples', () => {

@@ -1,8 +1,8 @@
 import tracemalloc
 import unittest
 
-from _vscode_pyprof.agent_protocol.replies import TracingStatus
-from _vscode_pyprof.target.memory_probe import MemoryProbe
+from _vspyprof.agent_protocol.replies import TracingStatus
+from _vspyprof.target.memory_probe import MemoryProbe
 
 
 @unittest.skipIf(tracemalloc.is_tracing(), "the test run itself is traced")

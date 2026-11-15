@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.commands import (
+from _vspyprof.agent_protocol.commands import (
     CountObjects,
     Ping,
     SetAsyncioDebug,
@@ -9,8 +9,8 @@ from _vscode_pyprof.agent_protocol.commands import (
     StopTracing,
     TakeSnapshot,
 )
-from _vscode_pyprof.agent_protocol.messages import TO_AGENT
-from _vscode_pyprof.wire import Request, WireDecoder, WireEncoder
+from _vspyprof.agent_protocol.messages import TO_AGENT
+from _vspyprof.wire import Request, WireDecoder, WireEncoder
 
 
 class TestToAgent(unittest.TestCase):

@@ -2,12 +2,12 @@ import time
 import unittest
 from unittest.mock import MagicMock, create_autospec
 
-from _vscode_pyprof.collector.frames.frame_classifier import FrameClassifier
-from _vscode_pyprof.collector.sampling.gc_recorder import GcRecorder
-from _vscode_pyprof.collector.sampling.tachyon import Tachyon
-from _vscode_pyprof.collector.store.session_clock import SessionClock
-from _vscode_pyprof.collector.store.stack_table import StackTable
-from _vscode_pyprof.collector.store.store import Store
+from _vspyprof.collector.frames.frame_classifier import FrameClassifier
+from _vspyprof.collector.sampling.gc_recorder import GcRecorder
+from _vspyprof.collector.sampling.tachyon import Tachyon
+from _vspyprof.collector.store.session_clock import SessionClock
+from _vspyprof.collector.store.stack_table import StackTable
+from _vspyprof.collector.store.store import Store
 from tests.unit.json_view import JsonView
 
 

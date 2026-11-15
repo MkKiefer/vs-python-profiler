@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
+from _vspyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
 
 
 class TestMemorySnapshot(unittest.TestCase):

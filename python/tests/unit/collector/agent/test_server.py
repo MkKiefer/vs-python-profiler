@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.metrics import TracedMemory
+from _vspyprof.agent_protocol.metrics import TracedMemory
 from tests.unit.collector.agent.agent_link_harness import AgentLinkTestCase
 
 

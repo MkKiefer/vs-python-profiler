@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 
-from _vscode_pyprof.processes import ProcessLister, PythonProcess
+from _vspyprof.processes import ProcessLister, PythonProcess
 
 
 class TestProcessLister(unittest.TestCase):

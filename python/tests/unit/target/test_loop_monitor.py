@@ -3,9 +3,9 @@ import threading
 import time
 import unittest
 
-from _vscode_pyprof.agent_protocol.metrics import AgentEvent
-from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
-from _vscode_pyprof.target.loop_monitor import LoopMonitor
+from _vspyprof.agent_protocol.metrics import AgentEvent
+from _vspyprof.target.asyncio_debug import AsyncioDebugCapture
+from _vspyprof.target.loop_monitor import LoopMonitor
 
 
 class TestLoopMonitor(unittest.TestCase):

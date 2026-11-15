@@ -8,7 +8,7 @@ import type { SessionManager } from './sessionManager';
 import { errorMessage } from '../shared/errors';
 import type { FromWebview, ToWebview, ViewState } from '../shared/protocol';
 
-const PANEL_TYPE = 'pyprof.dashboard';
+const PANEL_TYPE = 'vspyprof.dashboard';
 
 export class Dashboards implements vscode.Disposable {
   private readonly panels = new Map<string, vscode.WebviewPanel>();

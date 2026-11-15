@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.collector.store.sample_columns import SampleColumns
+from _vspyprof.collector.store.sample_columns import SampleColumns
 
 
 class TestSampleColumns(unittest.TestCase):

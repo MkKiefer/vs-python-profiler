@@ -87,7 +87,7 @@ export class SessionsView implements vscode.TreeDataProvider<SessionNode>, vscod
     item.description = this.describe(session);
     item.tooltip = this.tooltip(session);
     item.contextValue = session.live ? 'session.live' : 'session.done';
-    item.command = { command: 'pyprof.selectSession', title: 'Show', arguments: [session.id] };
+    item.command = { command: 'vspyprof.selectSession', title: 'Show', arguments: [session.id] };
     return item;
   }
 

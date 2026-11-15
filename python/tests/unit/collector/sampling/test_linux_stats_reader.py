@@ -1,7 +1,7 @@
 import sys
 import unittest
 
-from _vscode_pyprof.collector.sampling.linux_stats_reader import LinuxProcessStatsReader
+from _vspyprof.collector.sampling.linux_stats_reader import LinuxProcessStatsReader
 
 
 @unittest.skipUnless(sys.platform == "linux", "reads /proc")

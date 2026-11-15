@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.agent_protocol.address import AgentAddress
+from _vspyprof.agent_protocol.address import AgentAddress
 
 
 class TestAgentAddress(unittest.TestCase):

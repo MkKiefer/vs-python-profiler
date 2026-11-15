@@ -1,6 +1,6 @@
 import unittest
 
-from _vscode_pyprof.collector.store.append_log import AppendLog
+from _vspyprof.collector.store.append_log import AppendLog
 
 
 class TestAppendLog(unittest.TestCase):
