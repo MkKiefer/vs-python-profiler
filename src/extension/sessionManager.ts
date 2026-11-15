@@ -41,7 +41,8 @@ const LIVE_CONTEXT_KEY = 'vspyprof.hasLiveSession';
 export class SessionManager implements vscode.Disposable {
   private readonly all: Session[] = [];
   private activeSession: Session | undefined;
-  private readonly finalizing = new Set<Session>();
+  /** sessions whose auto-save and collector shutdown are under way */
+  private readonly finalizing = new Map<Session, Promise<void>>();
   private readonly startupTimers = new Map<Session, NodeJS.Timeout>();
 
   private readonly changed = new vscode.EventEmitter<void>();
@@ -202,11 +203,21 @@ export class SessionManager implements vscode.Disposable {
     this.forget(session);
   }
 
-  /** Auto-save and shut down the collector once a session has ended. */
-  private async finalize(session: Session): Promise<void> {
+  /**
+   * Auto-save and shut down the collector once a session has ended. A call while one is under way returns
+   * the same promise, so a caller that disposes the session afterwards (`remove`) waits for the save.
+   */
+  private finalize(session: Session): Promise<void> {
+    const running = this.finalizing.get(session);
+    if (running) return running;
     const client = session.client;
-    if (!client || this.finalizing.has(session)) return;
-    this.finalizing.add(session);
+    if (!client) return Promise.resolve();
+    const done = this.saveAndShutdown(session, client).finally(() => this.finalizing.delete(session));
+    this.finalizing.set(session, done);
+    return done;
+  }
+
+  private async saveAndShutdown(session: Session, client: CollectorClient): Promise<void> {
     try {
       if (settings.autoSave() && session.model.stats.samples > 0 && !session.filePath) {
         const stamp = new Date(session.startedAt).toISOString().replace(/[:.]/g, '-');
@@ -218,7 +229,6 @@ export class SessionManager implements vscode.Disposable {
       this.log.warn(`auto-save failed: ${errorMessage(e)}`);
     } finally {
       await client.shutdown();
-      this.finalizing.delete(session);
       this.changed.fire();
     }
   }

@@ -104,3 +104,22 @@ test('deleting a saved profile closes the session showing it', { skip }, () => {
   assert.deepEqual(sessions.savedProfiles(), []);
   assert.equal(sessions.active, undefined);
 });
+
+test('removing a live session waits for its auto-save', { skip }, async () => {
+  const second = spawn(python ?? '', [path.join(ROOT, 'test-apps', 'cpu_bound.py'), '30'], { stdio: 'ignore' });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 500)); // let the interpreter start
+    const info: PythonInfo = { executable: python ?? '', version: '3.15', major: 3, minor: 15, freeThreaded: false, label: 'test' };
+    const live = await sessions.attach(second.pid ?? 0, info, 'cpu_bound.py', { rateHz: 200, inject: false });
+    await until(() => live.model.samples.length > 50, 'samples');
+
+    await sessions.remove(live);
+    const saved = sessions.savedProfiles();
+
+    assert.deepEqual(sessions.sessions, []);
+    assert.equal(saved.length, 1, 'the auto-save finished before the collector was disposed');
+    assert.ok(saved[0].size > 0);
+  } finally {
+    second.kill();
+  }
+});
