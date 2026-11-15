@@ -201,7 +201,7 @@ class CollectorSession(AgentListener, SamplerListener):
 
     def _save(self, path: str) -> SaveResult:
         self._flush()
-        return SaveResult(path, self._profile_writer.write(path, self._store.full()))
+        return SaveResult(path, self._profile_writer.write(path, self._store.saved_profile()))
 
     def _shutdown(self) -> None:
         try:

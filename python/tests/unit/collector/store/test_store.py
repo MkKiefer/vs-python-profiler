@@ -1,4 +1,7 @@
+import gzip
+import json
 import os
+import tempfile
 import unittest
 from _remote_debugging import AwaitedInfo, CoroInfo, FrameInfo, InterpreterInfo, LocationInfo, TaskInfo, ThreadInfo
 
@@ -6,6 +9,7 @@ from _vspyprof.agent_protocol.metrics import EventDetails
 from _vspyprof.agent_protocol.replies import ObjectCounts, TypeCount
 from _vspyprof.collector.frames.frame_classifier import FrameClassifier
 from _vspyprof.collector.options import CollectorOptions
+from _vspyprof.collector.profile_writer import ProfileWriter
 from _vspyprof.collector.store.async_stack import AsyncStack
 from _vspyprof.collector.store.memory_snapshot import AllocationSite, MemorySnapshot
 from _vspyprof.collector.store.session_clock import SessionClock
@@ -308,6 +312,25 @@ class TestStoreDeltas(StoreTestCase):
         full = JsonView(self.store.full())
 
         self.assertEqual((full.get_str("format"), full.get_int("version")), (Store.FORMAT, Store.FORMAT_VERSION))
+
+    def test_saved_profile_written_to_file_equals_full_at_that_moment(self) -> None:
+        self.store.add_thread_sample(1.0, self.threads((101, 3, [self.frame(APP, "main", 1)])))
+        self.store.add_track(Track.RSS, 1.0, 100)
+        saved = self.store.saved_profile()
+        expected = self.store.full()
+        self.store.add_thread_sample(2.0, self.threads((101, 3, [self.frame(APP, "work", 2)])))  # after the snapshot
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "run.vspyprof")
+            ProfileWriter().write(path, saved)
+            with gzip.open(path, "rt", encoding="utf-8") as f:
+                written = json.load(f)
+
+        self.assertEqual(
+            {key: value for key, value in written.items() if key != "now"},
+            {key: value for key, value in expected.items() if key != "now"},
+        )
+        self.assertEqual(JsonView(written).get_object("samples").get_list("t"), [1.0])
 
 
 class TestStoreSessionFacts(StoreTestCase):

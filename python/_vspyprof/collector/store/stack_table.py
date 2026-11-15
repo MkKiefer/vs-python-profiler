@@ -40,7 +40,9 @@ class StackTable:
     """
 
     NO_STACK = -1
-    _SAMPLED_CACHE_LIMIT = 200_000
+    # A key holds Tachyon's FrameInfo objects: measured ~1.7 KB at depth 20, so 200k keys could hold ~350 MB.
+    # Most programs repeat a few thousand stacks; a miss only costs re-interning.
+    _SAMPLED_CACHE_LIMIT = 20_000
 
     def __init__(self, classifier: FrameClassifier) -> None:
         self._classifier = classifier

@@ -1,5 +1,6 @@
 import unittest
 
+from _vspyprof.collector.store.column_snapshot import ColumnSnapshot
 from _vspyprof.collector.store.sample_columns import SampleColumns
 
 
@@ -30,6 +31,24 @@ class TestSampleColumns(unittest.TestCase):
         self.columns.to_profile(new_only=False)
 
         self.assertEqual(self.columns.to_profile(new_only=True)["t"], [1.0, 2.0])
+
+    def test_append_keeps_thread_ids_beyond_32_bits(self) -> None:
+        self.columns.append(3.0, 0x7F12_3456_7890, 2, 1)
+
+        self.assertEqual(self.columns.to_profile(new_only=False)["tid"], [11, 12, 0x7F12_3456_7890])
+
+    def test_append_keeps_the_status_bits_the_dashboard_reads(self) -> None:
+        self.columns.append(3.0, 13, 2, 0x103)
+
+        self.assertEqual(self.columns.to_profile(new_only=False)["status"], [3, 0, 0x03])
+
+    def test_snapshot_holds_the_samples_present_when_taken(self) -> None:
+        snapshot = self.columns.snapshot()
+        self.columns.append(3.0, 13, 2, 1)
+
+        t = snapshot["t"]
+        assert isinstance(t, ColumnSnapshot)
+        self.assertEqual(list(t.chunks(10)), [[1.0, 2.0]])
 
 
 if __name__ == "__main__":

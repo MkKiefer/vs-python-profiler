@@ -212,7 +212,11 @@ class Store:
     def delta(self) -> JsonObject:
         """Everything recorded since the previous ``delta()`` call."""
         with self._lock:
-            data = self._tables(new_only=True)
+            data = self._tables(
+                new_only=True,
+                samples=self._samples.to_profile(new_only=True),
+                async_samples=self._async_samples.to_profile(new_only=True),
+            )
             data["threads"] = {str(thread_id): self._threads[thread_id] for thread_id in self._renamed_threads}
             latest_counts = self._object_counts.rows(new_only=True)[-1:]  # only the latest is shown live
             data["objectCounts"] = [self._counts_profile(counts) for counts in latest_counts]
@@ -223,17 +227,31 @@ class Store:
             return data
 
     def full(self) -> JsonObject:
-        """The whole profile in delta shape (the ``.vspyprof`` file content)."""
+        """The whole profile in delta shape (the ``.vspyprof`` file content), as plain JSON values."""
         with self._lock:
-            data = self._tables(new_only=False)
-            data["threads"] = {str(thread_id): name for thread_id, name in self._threads.items()}
-            data["objectCounts"] = [self._counts_profile(counts) for counts in self._object_counts.rows(new_only=False)]
-            data["meta"] = self._meta.to_profile()
-            data["format"] = self.FORMAT
-            data["version"] = self.FORMAT_VERSION
-            return data
+            return self._whole(self._samples.to_profile(new_only=False), self._async_samples.to_profile(new_only=False))
 
-    def _tables(self, *, new_only: bool) -> JsonObject:
+    def saved_profile(self) -> JsonObject:
+        """What ``full()`` returns, but with the sample columns as ``ColumnSnapshot``s for ``ProfileWriter``.
+
+        The samples are by far the largest table; streaming them from snapshots instead of
+        copying them into lists keeps saving from doubling the collector's memory. Every
+        table is taken in the same locked moment, so the samples only refer to stacks the
+        profile contains.
+        """
+        with self._lock:
+            return self._whole(self._samples.snapshot(), self._async_samples.snapshot())
+
+    def _whole(self, samples: JsonObject, async_samples: JsonObject) -> JsonObject:
+        data = self._tables(new_only=False, samples=samples, async_samples=async_samples)
+        data["threads"] = {str(thread_id): name for thread_id, name in self._threads.items()}
+        data["objectCounts"] = [self._counts_profile(counts) for counts in self._object_counts.rows(new_only=False)]
+        data["meta"] = self._meta.to_profile()
+        data["format"] = self.FORMAT
+        data["version"] = self.FORMAT_VERSION
+        return data
+
+    def _tables(self, *, new_only: bool, samples: JsonObject, async_samples: JsonObject) -> JsonObject:
         tracks: JsonObject = {}
         for track, log in self._tracks.items():
             points = log.rows(new_only=new_only)
@@ -243,8 +261,8 @@ class Store:
             "now": round(self._clock.now(), 2),
             "frames": self._stacks.frames.rows(new_only=new_only),
             "stacks": self._stacks.stacks.rows(new_only=new_only),
-            "samples": self._samples.to_profile(new_only=new_only),
-            "asyncSamples": self._async_samples.to_profile(new_only=new_only),
+            "samples": samples,
+            "asyncSamples": async_samples,
             "tracks": tracks,
             "gc": self._gc.rows(new_only=new_only),
             "markers": self._markers.rows(new_only=new_only),
