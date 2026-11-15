@@ -72,6 +72,15 @@ class TestLoopMonitor(unittest.TestCase):
         self.assertTrue(self.monitor.debug)
         self.assertEqual((self.loop.get_debug(), self.loop.slow_callback_duration), (True, 0.05))
 
+    def test_set_debug_with_new_threshold_while_enabled_updates_loops(self) -> None:
+        self.monitor.set_debug(True, slow_callback_ms=50.0)
+        self.run_on_loop()
+
+        self.monitor.set_debug(True, slow_callback_ms=250.0)
+        self.run_on_loop()
+
+        self.assertEqual((self.loop.get_debug(), self.loop.slow_callback_duration), (True, 0.25))
+
     def test_set_debug_false_restores_normal_mode(self) -> None:
         self.monitor.set_debug(True)
         self.run_on_loop()

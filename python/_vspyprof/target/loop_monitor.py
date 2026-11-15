@@ -85,9 +85,13 @@ class LoopMonitor:
 
     def set_debug(self, enabled: bool, slow_callback_ms: float | None = None) -> None:
         """Switch asyncio debug mode on every loop; ``slow_callback_ms`` is what counts as slow."""
+        threshold_changed = slow_callback_ms is not None and slow_callback_ms != self._slow_callback_ms
         if slow_callback_ms is not None:
             self._slow_callback_ms = slow_callback_ms
         if enabled == self._debug:
+            if enabled and threshold_changed:  # debug stays on: only the threshold of the loops changes
+                for probe in list(self._probes.values()):
+                    self._apply_debug(probe.loop)
             return
         self._debug = enabled
         if "asyncio" in sys.modules:
