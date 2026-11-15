@@ -91,10 +91,13 @@ python/_vscode_pyprof/
   `.pyprof` files (gzip JSON) have the same shape.
 - **One wire contract.** Every message that crosses a process boundary (webview ⇄
   extension ⇄ collector) is declared in
-  `src/shared/protocol.ts`; on the Python side, each message is a dataclass
-  (`wire.WireMessage`, or `wire.WireRow` when it travels as a JSON array).
-  `from_wire()` validates incoming JSON once, at the boundary, by the field
-  types; `to_wire()` writes it. Neither is written by hand.
+  `src/shared/protocol.ts`; on the Python side, each message is a dataclass of
+  its own that spells out its JSON: `to_wire()` builds it, `from_wire()` reads it
+  back through a `wire.WireReader`, which checks each value's type and names its
+  path in errors. A message is `WireWritable` (sent), `WireReadable` (received)
+  or `WireMessage` (both, for the agent protocol). Optional fields are
+  `X | None = None` in the dataclass and are left out of the JSON when unset.
+  `WireParser` picks the class of a message by its `"type"`.
 - **Two sides, kept apart.** `collector/` observes the program from outside;
   `target/` is everything that runs inside it, so it imports only `wire.py`,
   `agent_protocol/` and the package root (`tests/unit/target/test_isolation.py` fails if that changes).
@@ -173,11 +176,11 @@ the collector's own Python 3.15 process:
 | Imports inside functions | `target/launcher.py` (`ctypes`, `zipfile`) | This code runs inside the *profiled program*: importing modules the program does not use itself would slow it down and show up in its profile. The launcher must stay valid on Python 3.10, so it cannot use `lazy` imports; the agent modules (`target/agent.py`, `memory_probe.py`, `loop_monitor.py`, `asyncio_debug.py`) use PEP 810 `lazy` imports at the top of the file instead (`tests/unit/target/test_isolation.py` checks the agent loads none of them on import). `collector/store/` and `collector/agent/listener.py` use `lazy` imports for names that only appear in annotations (the private `_remote_debugging` types; a circular reference). |
 | Imports after a version check | `collector/cli.py`, `target/launcher.py` | They must start on older interpreters to print "Python 3.15+ is required" instead of a syntax error; everything that needs 3.15 is imported afterwards. |
 | Python 3.10-compatible syntax | `__init__.py` (root, `collector/`, `target/`), `collector/cli.py`, `target/launcher.py`, `processes.py` | Same reason; `processes.py` also runs before we know which interpreter the target uses. Enforced through ruff's per-file target version. |
-| No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only. `WireMessage.from_wire()` validates dataclasses by their field types instead (with `types` and `dataclasses` only: no `typing`, which the agent would otherwise load into the program). |
+| No pydantic at boundaries | `wire.py` | The collector is injected into arbitrary environments and must stay stdlib-only. Each message's hand-written `from_wire()` validates its JSON through `WireReader` instead (`typing` is imported `lazy`, for annotations only, so the agent does not load it into the program). |
 | Module-level entry points | `collector.cli.main`, `target.launcher.main`, `target.agent.start` | Called by name from the extension's `python -c` bootstraps and from `sys.remote_exec`; they only delegate to a class. |
 | Plain class instead of a dataclass | `target/loop_monitor._LoopProbe` | `@dataclass` evaluates field annotations at import; its `asyncio` annotation would load `asyncio` into a program that does not use it (`test_isolation.py` fails if it does). |
 | Dataclasses without `slots=True` | `agent_protocol/` | The package is imported inside the profiled program (on its main thread when attaching). Slotted dataclasses rebuild every class and load `inspect`; plain frozen dataclasses keep the one-time import pause short. |
-| JSON objects as `dict[str, object]` | `wire.py`, the store classes' hand-written `to_wire()`, `Store.delta()` / `full()`, the `params` / `result` envelope fields and the transports (`RpcServer`, `AgentConnection`, `ProfileWriter`) | JSON exists only at the wire edge. Between classes, data travels as a `WireMessage` dataclass (RPC params / results, notifications, agent commands / hello / metrics / replies, options) or another named type; names with a fixed set of values are enums. |
+| JSON objects as `dict[str, object]` | `wire.py`, the store classes' hand-written `to_wire()`, `Store.delta()` / `full()`, the `params` / `result` envelope fields and the transports (`RpcServer`, `AgentConnection`, `ProfileWriter`) | JSON exists only at the wire edge. Between classes, data travels as a message dataclass (RPC params / results, notifications, agent commands / hello / metrics / replies, options) or another named type; names with a fixed set of values are enums. |
 | Integration test not type-checked | `python/tests/integration/test_e2e.py` | It predates the guide; it is linted and formatted but not yet under `mypy --strict`. |
 
 The dashboard is a VS Code webview, not a single-page app over a REST API. These parts of

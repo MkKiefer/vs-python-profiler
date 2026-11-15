@@ -4,19 +4,24 @@ Mirror of ``CollectorNotification`` in ``src/shared/protocol.ts``. The ``delta``
 notification is not here: its payload is ``Store.delta()``.
 """
 
-from dataclasses import dataclass, field
+from abc import abstractmethod
+from dataclasses import dataclass
 from typing import ClassVar
 
 from _vscode_pyprof.collector.protocol import RpcNotification, SessionState
-from _vscode_pyprof.wire import WireMessage
+from _vscode_pyprof.wire import JsonObject, WireWritable
 
 
-class Notification(WireMessage):
+class Notification(WireWritable):
     """A message with a fixed notification name."""
 
     __slots__ = ()
 
     method: ClassVar[RpcNotification]
+
+    @abstractmethod
+    def to_wire(self) -> JsonObject:
+        """The notification's ``params``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +34,9 @@ class StateChanged(Notification):
     reason: str | None = None
     """A ``StopReason`` value or the extension's own reason, when sampling ends."""
 
+    def to_wire(self) -> JsonObject:
+        return self._omit_none({"state": self.state, "pid": self.pid, "reason": self.reason})
+
 
 @dataclass(frozen=True, slots=True)
 class AgentConnected(Notification):
@@ -37,14 +45,17 @@ class AgentConnected(Notification):
     pid: int
     argv: list[str]
     cwd: str | None
-    connected: bool = field(default=True, init=False)
+
+    def to_wire(self) -> JsonObject:
+        return self._omit_none({"connected": True, "pid": self.pid, "argv": self.argv, "cwd": self.cwd})
 
 
 @dataclass(frozen=True, slots=True)
 class AgentDisconnected(Notification):
     method = RpcNotification.AGENT
 
-    connected: bool = field(default=False, init=False)
+    def to_wire(self) -> JsonObject:
+        return {"connected": False}
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +66,9 @@ class ChildrenFound(Notification):
 
     pids: list[int]
 
+    def to_wire(self) -> JsonObject:
+        return {"pids": self.pids}
+
 
 @dataclass(frozen=True, slots=True)
 class ErrorOccurred(Notification):
@@ -63,3 +77,6 @@ class ErrorOccurred(Notification):
     method = RpcNotification.ERROR
 
     message: str
+
+    def to_wire(self) -> JsonObject:
+        return {"message": self.message}

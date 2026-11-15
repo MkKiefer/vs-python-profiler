@@ -9,9 +9,10 @@ import traceback
 from _vscode_pyprof.agent_protocol.commands import AgentRequest, CommandCall, CommandResult, Shutdown
 from _vscode_pyprof.agent_protocol.hello import AgentHello
 from _vscode_pyprof.agent_protocol.metrics import AgentMetrics
+from _vscode_pyprof.agent_protocol.names import AgentMessageType
 from _vscode_pyprof.agent_protocol.replies import Acknowledgement
 from _vscode_pyprof.collector.agent.listener import AgentListener
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage, read_one_of
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireParser, WireReadable
 
 
 class AgentError(RuntimeError):
@@ -43,6 +44,9 @@ class AgentConnection:
         self._pending: dict[int, _PendingRequest] = {}
         self._write_lock = threading.Lock()
         self._alive = True
+        self._parser = WireParser(
+            {AgentMessageType.RESULT: CommandResult.from_wire, AgentMessageType.METRICS: AgentMetrics.from_wire}
+        )
 
     @property
     def hello(self) -> AgentHello:
@@ -55,7 +59,7 @@ class AgentConnection:
     def start(self) -> None:
         threading.Thread(target=self._read_loop, name="pyprof-agent-reader", daemon=True).start()
 
-    def request[R: WireMessage](
+    def request[R: WireReadable](
         self, request: AgentRequest, reply_type: type[R], timeout: float = DEFAULT_TIMEOUT
     ) -> R:
         """Run a command in the target process and return its result, read as ``reply_type``.
@@ -121,7 +125,7 @@ class AgentConnection:
 
     def _dispatch(self, raw: JsonObject) -> None:
         try:
-            match read_one_of(raw, CommandResult, AgentMetrics):
+            match self._parser.parse(raw):
                 case CommandResult() as reply:
                     pending = self._pending.get(reply.id)
                     if pending is not None:

@@ -1,8 +1,9 @@
 import unittest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
+from typing import Self
 
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage, WireRow, read_one_of, wire
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage, WireParser, WireReader
 
 
 class _Color(StrEnum):
@@ -11,130 +12,194 @@ class _Color(StrEnum):
 
 
 @dataclass(frozen=True)
-class _Point(WireRow):
+class _Point(WireMessage):
+    """Sent as ``[x, y]``."""
+
     x: int
     y: int
+
+    def to_wire(self) -> list[object]:
+        return [self.x, self.y]
+
+    @classmethod
+    def from_wire(cls, raw: object, where: str = "$") -> Self:
+        row = WireReader.for_row(raw, where, ("x", "y"))
+        return cls(x=row.get("x", int), y=row.get("y", int))
 
 
 @dataclass(frozen=True)
 class _Sample(WireMessage):
-    wire_type = "sample"
-
-    rate_hz: int = field(metadata=wire(at_least=1))
+    count: int
     label: str | None
     points: list[_Point]
+    ratio: float = 0.5
     color: _Color = _Color.RED
-    perf_counter: float = field(default=0.0, metadata=wire("t"))
-    extra: JsonObject = field(default_factory=dict)
+    extra: JsonObject | None = None
+
+    def to_wire(self) -> JsonObject:
+        return self._omit_none(
+            {
+                "type": "sample",
+                "count": self.count,
+                "label": self.label,
+                "points": [point.to_wire() for point in self.points],
+                "ratio": self.ratio,
+                "color": self.color,
+                "extra": self.extra,
+            }
+        )
+
+    @classmethod
+    def from_wire(cls, raw: object, where: str = "$") -> Self:
+        message = WireReader.for_object(raw, where)
+        message.require_type("sample")
+        return cls(
+            count=message.get("count", int),
+            label=message.get_or("label", str, None),
+            points=message.list_of("points", _Point),
+            ratio=message.get_or("ratio", float, 0.5),
+            color=message.get_or("color", _Color, _Color.RED),
+            extra=message.json_object_or("extra", None),
+        )
 
 
 @dataclass(frozen=True)
 class _Other(WireMessage):
-    wire_type = "other"
+    def to_wire(self) -> JsonObject:
+        return {"type": "other"}
 
-    ok: bool = field(default=True, init=False)
+    @classmethod
+    def from_wire(cls, raw: object, where: str = "$") -> Self:
+        WireReader.for_object(raw, where).require_type("other")
+        return cls()
 
 
-class TestWireMessageFromWire(unittest.TestCase):
+class TestWireReader(unittest.TestCase):
     def read(self, **values: object) -> _Sample:
-        return _Sample.from_wire({"type": "sample", "rateHz": 100, "points": []} | values)
+        return _Sample.from_wire({"type": "sample", "count": 1, "points": []} | values)
 
-    def test_from_wire_reads_camel_case_keys(self) -> None:
-        self.assertEqual(self.read(rateHz=250).rate_hz, 250)
+    def test_get_or_with_missing_key_returns_default(self) -> None:
+        self.assertEqual((self.read().ratio, self.read().color), (0.5, _Color.RED))
 
-    def test_from_wire_reads_the_key_named_in_wire_metadata(self) -> None:
-        self.assertEqual(self.read(t=2.5).perf_counter, 2.5)
-
-    def test_from_wire_with_missing_key_uses_default(self) -> None:
-        self.assertEqual((self.read().color, self.read().perf_counter), (_Color.RED, 0.0))
-
-    def test_from_wire_with_null_uses_default(self) -> None:
+    def test_get_or_with_null_returns_default(self) -> None:
         self.assertEqual(self.read(color=None).color, _Color.RED)
 
-    def test_from_wire_with_missing_optional_field_reads_none(self) -> None:
+    def test_get_or_with_missing_optional_value_returns_none(self) -> None:
         self.assertIsNone(self.read().label)
 
-    def test_from_wire_with_missing_required_field_raises_wire_error(self) -> None:
-        with self.assertRaisesRegex(WireError, r"\$\.points is missing"):
-            _Sample.from_wire({"type": "sample", "rateHz": 100})
+    def test_get_with_missing_key_raises_wire_error_naming_its_path(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.count is missing"):
+            _Sample.from_wire({"type": "sample", "points": []})
 
-    def test_from_wire_with_number_below_at_least_raises_it(self) -> None:
-        self.assertEqual(self.read(rateHz=0).rate_hz, 1)
+    def test_get_with_null_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.count is missing"):
+            self.read(count=None)
 
-    def test_from_wire_with_integral_float_for_int_reads_int(self) -> None:
-        self.assertEqual(self.read(rateHz=250.0).rate_hz, 250)
+    def test_get_with_integral_float_for_int_returns_int(self) -> None:
+        count = self.read(count=250.0).count
 
-    def test_from_wire_with_fractional_float_for_int_raises_wire_error(self) -> None:
-        with self.assertRaisesRegex(WireError, r"\$\.rateHz must be an integer"):
-            self.read(rateHz=2.5)
+        self.assertEqual((count, type(count)), (250, int))
 
-    def test_from_wire_with_boolean_for_int_raises_wire_error(self) -> None:
-        with self.assertRaises(WireError):
-            self.read(rateHz=True)
+    def test_get_with_fractional_float_for_int_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.count must be an integer, got 2\.5"):
+            self.read(count=2.5)
 
-    def test_from_wire_with_integer_for_float_reads_float(self) -> None:
-        self.assertEqual(self.read(t=3).perf_counter, 3.0)
+    def test_get_with_boolean_for_int_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.count must be an integer, got True"):
+            self.read(count=True)
 
-    def test_from_wire_reads_enum_values(self) -> None:
+    def test_get_with_integer_for_float_returns_float(self) -> None:
+        ratio = self.read(ratio=3).ratio
+
+        self.assertEqual((ratio, type(ratio)), (3.0, float))
+
+    def test_get_with_string_for_float_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.ratio must be a number"):
+            self.read(ratio="3")
+
+    def test_get_with_number_for_string_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.label must be a string"):
+            self.read(label=3)
+
+    def test_get_reads_enum_values(self) -> None:
         self.assertIs(self.read(color="blue").color, _Color.BLUE)
 
-    def test_from_wire_with_unknown_enum_value_raises_wire_error(self) -> None:
+    def test_get_with_unknown_enum_value_raises_wire_error(self) -> None:
         with self.assertRaisesRegex(WireError, r"\$\.color must be one of \['red', 'blue'\]"):
             self.read(color="green")
 
-    def test_from_wire_reads_lists_of_rows(self) -> None:
+    def test_list_of_reads_messages_by_their_from_wire(self) -> None:
         self.assertEqual(self.read(points=[[1, 2], [3, 4]]).points, [_Point(1, 2), _Point(3, 4)])
 
-    def test_from_wire_with_bad_list_item_names_its_index(self) -> None:
-        with self.assertRaisesRegex(WireError, r"\$\.points\[1\] must have 2 items"):
+    def test_list_of_with_bad_item_names_its_index(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.points\[1\] must have 2 items, got 1"):
             self.read(points=[[1, 2], [3]])
 
-    def test_from_wire_passes_json_objects_through(self) -> None:
+    def test_list_of_with_bad_row_item_names_it(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.points\[0\]\.y must be an integer"):
+            self.read(points=[[1, "two"]])
+
+    def test_list_of_with_non_array_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.points must be an array"):
+            self.read(points={})
+
+    def test_json_object_or_passes_objects_through(self) -> None:
         self.assertEqual(self.read(extra={"any": [1]}).extra, {"any": [1]})
+
+    def test_json_object_or_with_empty_object_returns_it(self) -> None:
+        self.assertEqual(self.read(extra={}).extra, {})
+
+    def test_json_object_or_with_non_object_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.extra must be an object"):
+            self.read(extra=[1])
 
     def test_from_wire_ignores_unknown_keys(self) -> None:
         self.assertEqual(self.read(unknown=1), self.read())
 
-    def test_from_wire_of_non_object_raises_wire_error(self) -> None:
+    def test_for_object_with_non_object_raises_wire_error(self) -> None:
         with self.assertRaisesRegex(WireError, r"\$ must be an object"):
             _Sample.from_wire([1, 2])
 
-    def test_from_wire_with_another_type_raises_wire_error(self) -> None:
+    def test_for_row_with_non_array_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$ must be an array"):
+            _Point.from_wire({"x": 1, "y": 2})
+
+    def test_require_type_with_another_type_raises_wire_error(self) -> None:
         with self.assertRaisesRegex(WireError, r"\$\.type must be 'sample', got 'other'"):
             self.read(type="other")
 
-    def test_from_wire_leaves_fields_without_init_at_their_default(self) -> None:
-        self.assertEqual(_Other.from_wire({"type": "other", "ok": False}), _Other())
 
-
-class TestWireMessageToWire(unittest.TestCase):
-    def test_to_wire_writes_camel_case_keys_rows_enums_and_type(self) -> None:
-        sample = _Sample(rate_hz=5, label="a", points=[_Point(1, 2)], color=_Color.BLUE, perf_counter=1.5)
-
+class TestWireWritable(unittest.TestCase):
+    def test_omit_none_leaves_unset_optional_fields_out(self) -> None:
         self.assertEqual(
-            sample.to_wire(),
-            {"type": "sample", "rateHz": 5, "label": "a", "points": [[1, 2]], "color": "blue", "t": 1.5, "extra": {}},
+            _Sample(count=5, label=None, points=[]).to_wire(),
+            {"type": "sample", "count": 5, "points": [], "ratio": 0.5, "color": "red"},
         )
 
-    def test_to_wire_leaves_none_out(self) -> None:
-        self.assertNotIn("label", _Sample(rate_hz=5, label=None, points=[]).to_wire())
-
     def test_to_wire_round_trips_through_from_wire(self) -> None:
-        sample = _Sample(rate_hz=5, label=None, points=[_Point(1, 2)], extra={"k": "v"})
+        sample = _Sample(count=5, label="a", points=[_Point(1, 2)], ratio=0.25, color=_Color.BLUE, extra={"k": "v"})
 
         self.assertEqual(_Sample.from_wire(sample.to_wire()), sample)
 
-    def test_to_wire_writes_fields_without_init(self) -> None:
-        self.assertEqual(_Other().to_wire(), {"ok": True, "type": "other"})
 
+class TestWireParser(unittest.TestCase):
+    def setUp(self) -> None:
+        self.parser = WireParser({"sample": _Sample.from_wire, "other": _Other.from_wire})
 
-class TestReadOneOf(unittest.TestCase):
-    def test_read_one_of_reads_the_class_its_type_names(self) -> None:
-        self.assertEqual(read_one_of({"type": "other"}, _Sample, _Other), _Other())
+    def test_parse_reads_the_class_its_type_names(self) -> None:
+        self.assertEqual(self.parser.parse({"type": "other"}), _Other())
 
-    def test_read_one_of_with_unknown_type_raises_wire_error(self) -> None:
+    def test_parse_with_unknown_type_raises_wire_error(self) -> None:
         with self.assertRaisesRegex(WireError, "unexpected message type 'third'"):
-            read_one_of({"type": "third"}, _Sample, _Other)
+            self.parser.parse({"type": "third"})
+
+    def test_parse_of_non_object_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, "unexpected message type None"):
+            self.parser.parse([1])
+
+    def test_parse_with_bad_message_of_known_type_raises_wire_error(self) -> None:
+        with self.assertRaisesRegex(WireError, r"\$\.count is missing"):
+            self.parser.parse({"type": "sample", "points": []})
 
 
 class TestJsonLines(unittest.TestCase):

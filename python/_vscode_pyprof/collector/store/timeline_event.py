@@ -3,11 +3,11 @@
 from dataclasses import dataclass, field
 
 from _vscode_pyprof.agent_protocol.metrics import EventDetails
-from _vscode_pyprof.wire import JsonObject, WireMessage
+from _vscode_pyprof.wire import JsonObject, WireWritable
 
 
 @dataclass(frozen=True, slots=True)
-class TimelineEvent(WireMessage):
+class TimelineEvent(WireWritable):
     t: float
     """Session milliseconds."""
     kind: str

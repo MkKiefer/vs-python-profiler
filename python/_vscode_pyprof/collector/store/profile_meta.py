@@ -6,11 +6,11 @@ import time
 from dataclasses import dataclass
 
 from _vscode_pyprof.collector.options import CollectorOptions
-from _vscode_pyprof.wire import JsonObject, WireMessage
+from _vscode_pyprof.wire import JsonObject, WireWritable
 
 
 @dataclass(frozen=True, slots=True)
-class ProfileMeta(WireMessage):
+class ProfileMeta(WireWritable):
     """Mirror of ``ProfileMeta`` in ``src/shared/model.ts``.
 
     The interpreter facts are known from the start; the others are filled in as
@@ -62,5 +62,4 @@ class ProfileMeta(WireMessage):
             "argv": self.argv,
             "cwd": self.cwd,
         }
-        wire.update((name, value) for name, value in known_later.items() if value is not None)
-        return wire
+        return wire | self._omit_none(known_later)

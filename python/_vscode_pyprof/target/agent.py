@@ -48,7 +48,7 @@ from _vscode_pyprof.agent_protocol.replies import Acknowledgement, AsyncioDebugS
 from _vscode_pyprof.target.asyncio_debug import AsyncioDebugCapture
 from _vscode_pyprof.target.loop_monitor import LoopMonitor
 from _vscode_pyprof.target.memory_probe import MemoryProbe
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireMessage
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireWritable
 
 
 class Agent(threading.Thread):
@@ -77,7 +77,7 @@ class Agent(threading.Thread):
         self._socket: socket.socket | None = None
         self._write_lock = threading.Lock()
         self._halt = threading.Event()
-        self._commands: dict[str, Callable[[JsonObject], WireMessage]] = {}
+        self._commands: dict[str, Callable[[JsonObject], WireWritable]] = {}
         self._register(StartTracing, self._start_tracing)
         self._register(StopTracing, self._stop_tracing)
         self._register(TakeSnapshot, self._snapshot)
@@ -144,7 +144,7 @@ class Agent(threading.Thread):
                 last_metrics = now
                 self._send_metrics(now)
 
-    def _register[R: AgentRequest](self, request_type: type[R], handler: Callable[[R], WireMessage]) -> None:
+    def _register[R: AgentRequest](self, request_type: type[R], handler: Callable[[R], WireWritable]) -> None:
         self._commands[request_type.command] = lambda params: handler(request_type.from_wire(params, "params"))
 
     def _dispatch(self, raw: JsonObject) -> None:
@@ -159,7 +159,7 @@ class Agent(threading.Thread):
             reply = CommandResult(call.id, error=f"{type(error).__name__}: {error}")
         self._send(reply)
 
-    def _send(self, message: WireMessage) -> None:
+    def _send(self, message: AgentHello | AgentMetrics | CommandResult) -> None:
         data = JsonLines.encode(message.to_wire(), fallback=repr)
         with self._write_lock:
             if self._socket is None:
@@ -202,26 +202,26 @@ class Agent(threading.Thread):
                 pass
 
     # ---- commands: one per ``AgentCommand``, each returns the result sent back to the collector
-    def _start_tracing(self, request: StartTracing) -> WireMessage:
+    def _start_tracing(self, request: StartTracing) -> WireWritable:
         return self._memory.start_tracing(request.frames)
 
-    def _stop_tracing(self, _request: StopTracing) -> WireMessage:
+    def _stop_tracing(self, _request: StopTracing) -> WireWritable:
         return self._memory.stop_tracing()
 
-    def _snapshot(self, request: TakeSnapshot) -> WireMessage:
+    def _snapshot(self, request: TakeSnapshot) -> WireWritable:
         return self._memory.snapshot(request.limit)
 
-    def _object_counts(self, request: CountObjects) -> WireMessage:
+    def _object_counts(self, request: CountObjects) -> WireWritable:
         return self._memory.object_counts(request.limit)
 
-    def _set_asyncio_debug(self, request: SetAsyncioDebug) -> WireMessage:
+    def _set_asyncio_debug(self, request: SetAsyncioDebug) -> WireWritable:
         self._loops.set_debug(request.enabled, request.slow_ms)
         return AsyncioDebugStatus(self._loops.debug, self._loops.loop_count)
 
-    def _ping(self, _request: Ping) -> WireMessage:
+    def _ping(self, _request: Ping) -> WireWritable:
         return Pong(time.perf_counter(), os.getpid())
 
-    def _shutdown(self, _request: Shutdown) -> WireMessage:
+    def _shutdown(self, _request: Shutdown) -> WireWritable:
         self._halt.set()
         return Acknowledgement()
 

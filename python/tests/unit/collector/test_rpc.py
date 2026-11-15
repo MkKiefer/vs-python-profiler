@@ -3,10 +3,11 @@ import json
 import threading
 import unittest
 from dataclasses import dataclass
+from typing import Self
 
 from _vscode_pyprof.collector.rpc import RpcError, RpcServer
 from _vscode_pyprof.collector.rpc_params import NoParams
-from _vscode_pyprof.wire import JsonObject, WireMessage
+from _vscode_pyprof.wire import JsonObject, WireMessage, WireReader, WireWritable
 from tests.unit.json_view import JsonView
 
 
@@ -15,6 +16,13 @@ class _Echo(WireMessage):
     """The params and the result of the test's ``echo`` method."""
 
     name: str
+
+    def to_wire(self) -> JsonObject:
+        return {"name": self.name}
+
+    @classmethod
+    def from_wire(cls, raw: object, where: str = "$") -> Self:
+        return cls(name=WireReader.for_object(raw, where).get("name", str))
 
 
 class _RecordingOutput(io.BytesIO):
@@ -48,7 +56,7 @@ class TestRpcServer(unittest.TestCase):
         return server
 
     @staticmethod
-    def _raise_rpc_error(_params: NoParams) -> WireMessage:
+    def _raise_rpc_error(_params: NoParams) -> WireWritable:
         raise RpcError("not now")
 
     def test_serve_with_known_method_writes_result(self) -> None:

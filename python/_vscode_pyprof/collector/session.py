@@ -73,7 +73,7 @@ from _vscode_pyprof.collector.sampling.tachyon import Tachyon, TachyonError
 from _vscode_pyprof.collector.store.session_clock import SessionClock
 from _vscode_pyprof.collector.store.store import Store
 from _vscode_pyprof.collector.store.track import Track
-from _vscode_pyprof.wire import WireMessage
+from _vscode_pyprof.wire import WireReadable
 
 
 class CollectorSession(AgentListener, SamplerListener):
@@ -314,7 +314,7 @@ class CollectorSession(AgentListener, SamplerListener):
         return agent
 
     @staticmethod
-    def _ask[R: WireMessage](
+    def _ask[R: WireReadable](
         agent: AgentConnection,
         request: AgentRequest,
         reply_type: type[R],

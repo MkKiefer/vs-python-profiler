@@ -11,22 +11,29 @@ import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
-from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireMessage
+from _vscode_pyprof.wire import JsonLines, JsonObject, WireError, WireReadable, WireReader, WireWritable
 
-type _Handler = Callable[[JsonObject], WireMessage]
+type _Handler = Callable[[JsonObject], WireWritable]
 """Reads the ``params`` of a request and returns its result."""
 
 
 @dataclass(frozen=True, slots=True)
-class RpcRequest(WireMessage):
+class RpcRequest(WireReadable):
     """A request or notification; ``params`` is read by the handler of ``method``."""
 
     method: str
     id: object = None
     """Any JSON value; ``None`` for a notification, which gets no response."""
     params: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def from_wire(cls, raw: object, where: str = "$") -> Self:
+        message = WireReader.for_object(raw, where)
+        return cls(
+            method=message.get("method", str), id=message.value("id"), params=message.json_object_or("params", {})
+        )
 
 
 class RpcError(Exception):
@@ -47,7 +54,9 @@ class RpcServer:
     def closed(self) -> bool:
         return self._closed.is_set()
 
-    def register[P: WireMessage](self, method: str, params_type: type[P], handler: Callable[[P], WireMessage]) -> None:
+    def register[P: WireReadable](
+        self, method: str, params_type: type[P], handler: Callable[[P], WireWritable]
+    ) -> None:
         """Serve ``method`` with ``handler``, which gets the request's ``params`` read as ``params_type``."""
         self._handlers[method] = lambda params: handler(params_type.from_wire(params, "params"))
 
