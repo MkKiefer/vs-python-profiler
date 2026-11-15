@@ -14,6 +14,7 @@ import type { SessionManager } from './sessionManager';
 import type { ProcessesView } from './views/processesView';
 import type { SessionNode } from './views/sessionsView';
 import { errorDetail, errorMessage } from '../shared/errors';
+import { workspaceTrust } from './trust';
 
 export interface CommandDependencies {
   log: vscode.LogOutputChannel;
@@ -35,11 +36,11 @@ export class Commands {
   register(ctx: vscode.ExtensionContext): void {
     const { sessions, actions, launcher, picker, heat, processesView } = this.deps;
     const handlers: Record<string, (...args: never[]) => unknown> = {
-      'vspyprof.profileFile': (arg?: unknown) => launcher.profileFile(arg),
-      'vspyprof.profileConfiguration': () => launcher.profileConfiguration(),
-      'vspyprof.profileTest': () => launcher.profileTest(),
-      'vspyprof.attach': () => picker.pickAndAttach(),
-      'vspyprof.attachProcess': (process: ProcInfo) => picker.attach(process),
+      'vspyprof.profileFile': (arg?: unknown) => workspaceTrust.require('Profiling') && launcher.profileFile(arg),
+      'vspyprof.profileConfiguration': () => workspaceTrust.require('Profiling') && launcher.profileConfiguration(),
+      'vspyprof.profileTest': () => workspaceTrust.require('Profiling') && launcher.profileTest(),
+      'vspyprof.attach': () => workspaceTrust.require('Attaching') && picker.pickAndAttach(),
+      'vspyprof.attachProcess': (process: ProcInfo) => workspaceTrust.require('Attaching') && picker.attach(process),
       'vspyprof.refreshProcesses': () => processesView.refresh(),
       'vspyprof.stop': (arg: SessionArgument) => this.withLiveSession(arg, (s) => sessions.stop(s)),
       'vspyprof.stopAndTerminate': (arg: SessionArgument) => this.withLiveSession(arg, (s) => sessions.stop(s, true)),
@@ -61,7 +62,9 @@ export class Commands {
       ctx.subscriptions.push(vscode.commands.registerCommand(id, this.reportingErrors(handler)));
     }
     // used as `${command:vspyprof.pickProcess}`: its return value is the result, errors go to the caller
-    ctx.subscriptions.push(vscode.commands.registerCommand('vspyprof.pickProcess', () => picker.pickPid()));
+    ctx.subscriptions.push(vscode.commands.registerCommand('vspyprof.pickProcess', () =>
+        workspaceTrust.require('Picking a process') ? picker.pickPid() : undefined,
+      ));
   }
 
   /** Commands never fail silently: log the stack, tell the user. */

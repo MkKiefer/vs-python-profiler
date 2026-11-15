@@ -130,6 +130,7 @@ export const recorded = {
   customEditors: [] as string[],
   debugTypes: [] as string[],
   contexts: new Map<string, unknown>(),
+  warnings: [] as string[],
 };
 
 const registration = (undo: () => void = () => undefined): Disposable => new Disposable(undo);
@@ -185,12 +186,18 @@ export const window = {
   },
   onDidCloseTerminal: terminalClosed.event,
   showInformationMessage: () => Promise.resolve(undefined),
-  showWarningMessage: () => Promise.resolve(undefined),
+  showWarningMessage: (message: string) => {
+    recorded.warnings.push(message);
+    return Promise.resolve(undefined);
+  },
   showErrorMessage: () => Promise.resolve(undefined),
 };
 
 export const workspace = {
   workspaceFolders: undefined,
+  /** tests flip this to exercise Restricted Mode */
+  isTrusted: true,
+  onDidGrantWorkspaceTrust: () => registration(),
   textDocuments: [] as unknown[],
   getConfiguration: () => ({
     get: (_key: string, fallback?: unknown) => fallback,

@@ -5,6 +5,14 @@
   "version": "0.1.0",
   "publisher": "vspyprof",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MkKiefer/vs-python-profiler.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MkKiefer/vs-python-profiler/issues"
+  },
+  "homepage": "https://github.com/MkKiefer/vs-python-profiler#readme",
   "icon": "media/icon.png",
   "galleryBanner": {
     "color": "#1b2433",
@@ -29,6 +37,19 @@
     "performance"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Profiling and attaching run Python from the workspace and need a trusted workspace. Saved .vspyprof profiles open in Restricted Mode.",
+      "restrictedConfigurations": [
+        "vspyprof.pythonPath"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Profiling runs a local Python interpreter."
+    }
+  },
   "extensionKind": [
     "workspace"
   ],

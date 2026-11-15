@@ -2,6 +2,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import { shortTitle, type ProcessPicker, type ProcInfo } from '../processes';
+import { workspaceTrust } from '../trust';
 
 type ProcessNode = ProcInfo | { empty: string };
 
@@ -9,7 +10,11 @@ export class ProcessesView implements vscode.TreeDataProvider<ProcessNode>, vsco
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
 
-  constructor(private readonly picker: ProcessPicker) {}
+  private readonly trustGranted: vscode.Disposable;
+
+  constructor(private readonly picker: ProcessPicker) {
+    this.trustGranted = workspaceTrust.onDidGrant(() => this.refresh());
+  }
 
   refresh(): void {
     this.changed.fire();
@@ -17,6 +22,8 @@ export class ProcessesView implements vscode.TreeDataProvider<ProcessNode>, vsco
 
   async getChildren(node?: ProcessNode): Promise<ProcessNode[]> {
     if (node) return [];
+    // listing runs processes.py with the workspace's interpreter
+    if (!workspaceTrust.trusted) return [{ empty: 'Trust this workspace to list Python processes' }];
     const processes = this.picker.rank(await this.picker.list());
     return processes.length ? processes : [{ empty: 'No Python processes running' }];
   }
@@ -38,6 +45,7 @@ export class ProcessesView implements vscode.TreeDataProvider<ProcessNode>, vsco
   }
 
   dispose(): void {
+    this.trustGranted.dispose();
     this.changed.dispose();
   }
 }

@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ExtensionContext } from 'vscode';
 import { activate } from '../src/extension/extension';
-import { recorded, Uri } from './support/vscodeStub';
+import { recorded, Uri, workspace } from './support/vscodeStub';
 
 // tests are bundled into dist-test/, one level below the repository root
 const ROOT = path.join(__dirname, '..');
@@ -79,4 +79,23 @@ test('session commands without a session tell the user instead of failing', asyn
   await assert.doesNotReject(async () => {
     await stop(undefined);
   });
+});
+
+test('profiling in an untrusted workspace asks for trust instead of running Python', async () => {
+  const profileFile = recorded.commands.get('vspyprof.profileFile');
+  const pickProcess = recorded.commands.get('vspyprof.pickProcess');
+  assert.ok(profileFile && pickProcess);
+  workspace.isTrusted = false;
+  recorded.warnings.length = 0;
+
+  try {
+    await profileFile(undefined);
+    const picked = await pickProcess();
+
+    assert.equal(picked, undefined);
+    assert.equal(recorded.warnings.length, 2);
+    assert.match(recorded.warnings[0], /trusted workspace/);
+  } finally {
+    workspace.isTrusted = true;
+  }
 });

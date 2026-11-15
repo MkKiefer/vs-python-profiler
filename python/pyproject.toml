@@ -3,6 +3,7 @@ name = "vspyprof-collector"
 version = "0.1.0"
 description = "Collector (collector/) and in-program launcher and agent (target/) of the Python Profiler VS Code extension"
 requires-python = ">=3.15"
+license = "MIT"
 dependencies = []
 
 [tool.pdm]
