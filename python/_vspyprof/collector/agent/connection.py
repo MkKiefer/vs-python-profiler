@@ -71,11 +71,13 @@ class AgentConnection:
         else, does not answer within ``timeout`` seconds or is not connected (any more).
         """
         name = type(command).__name__
-        if not self._alive:
-            raise AgentError("agent is not connected")
         request_id = next(self._ids)
         pending = _PendingRequest()
+        # register before checking: a reader that ends after the check still finds and wakes this request
         self._pending[request_id] = pending
+        if not self._alive:
+            self._pending.pop(request_id, None)
+            raise AgentError("agent is not connected")
         try:
             with self._write_lock:
                 self._sock.sendall(self._encoder.encode(Request(request_id, command)))
