@@ -14,6 +14,20 @@ test('cpu profile contains the hot functions and the worker thread', () => {
   assert.ok(m.threadList().some((t) => t.name === 'checksum-worker'));
 });
 
+test('a delta with more rows than the call stack can spread loads completely', () => {
+  const m = loadProfile('async');
+  const rows = 300_000;
+  const delta = m.toDelta();
+  delta.taskEvents = Array.from({ length: rows }, (_, i): [number, number, string] => [i, 1, 'running']);
+  delta.gc = Array.from({ length: rows }, (_, i): [number, number, number, number, number] => [i, 0.1, 0, 1, 100]);
+
+  const loaded = new ProfileModel();
+  loaded.applyDelta(delta);
+
+  assert.equal(loaded.taskEvents.length, rows);
+  assert.equal(loaded.gc.length, rows);
+});
+
 test('launcher and runpy frames do not leak into user stacks', () => {
   const m = loadProfile('cpu');
 

@@ -174,6 +174,14 @@ export interface FnStat {
   total: number;
 }
 
+/**
+ * Append `items` to `target` in place. Not `push(...items)`: a saved profile or a dashboard's `init`
+ * arrives as one delta, and spreading more than ~100k elements overflows the call stack.
+ */
+function appendAll<T>(target: T[], items: readonly T[]): void {
+  for (const item of items) target.push(item);
+}
+
 class SampleTable {
   t = new Float64Array(1024);
   tid = new Float64Array(1024);
@@ -293,10 +301,10 @@ export class ProfileModel {
         tr.v.push(v);
       }
     }
-    this.gc.push(...d.gc);
-    this.markers.push(...d.markers);
-    this.events.push(...d.events);
-    this.taskEvents.push(...d.taskEvents);
+    appendAll(this.gc, d.gc);
+    appendAll(this.markers, d.markers);
+    appendAll(this.events, d.events);
+    appendAll(this.taskEvents, d.taskEvents);
     for (const t of d.tasks) this.tasks.set(t.id, t);
     for (const [k, v] of Object.entries(d.threads)) this.threads.set(Number(k), v);
     for (const s of d.snapshots) {
@@ -304,7 +312,7 @@ export class ProfileModel {
       if (i >= 0) this.snapshots[i] = s;
       else this.snapshots.push(s);
     }
-    this.objectCounts.push(...d.objectCounts);
+    appendAll(this.objectCounts, d.objectCounts);
     if (d.meta) this.meta = { ...this.meta, ...d.meta };
     if (d.stats) this.stats = d.stats;
     this.now = Math.max(this.now, d.now ?? 0);
