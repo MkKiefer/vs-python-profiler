@@ -684,7 +684,7 @@
   },
   "dependencies": {
     "@vscode/python-extension": "^1.0.6",
-    "pinia": "^3.0.4",
+    "pinia": "^4.1.0",
     "vue": "^3.5.45",
     "vue-router": "^4.6.4"
   }
