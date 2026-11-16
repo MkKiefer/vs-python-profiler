@@ -30,5 +30,11 @@ First release.
 - Workspace Trust: profiling and attaching need a trusted workspace; saved profiles open in
   Restricted Mode.
 
+### Known issues
+
+- Python builds whose `_asyncio` module lacks the `AsyncioDebug` section (seen with Homebrew's
+  `python@3.15` on macOS) cannot show the asyncio task timeline or async-aware stacks; the timeline
+  says so with a sampler event. Loop lag, slow callbacks and the other asyncio diagnostics work.
+
 [Unreleased]: https://github.com/MkKiefer/vs-python-profiler/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/MkKiefer/vs-python-profiler/releases/tag/v0.1.0

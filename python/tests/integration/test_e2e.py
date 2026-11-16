@@ -226,9 +226,18 @@ class E2E(unittest.TestCase):
             c.wait_note("AgentConnected", timeout=15)
             c.call("SetAsyncioDebug", {"enabled": True, "slowMs": 50})
             time.sleep(3.5)
-            tasks = c.model["tasks"]
-            self.assertTrue(any(t["name"].startswith("worker-") for t in tasks.values()), (tasks, c.model["events"]))
-            self.assertGreater(c.model["asyncSamples"], 10)
+            # Some builds (Homebrew's python@3.15 on macOS) lack the AsyncioDebug section that the remote
+            # task table and async-aware stacks are read from; the sampler then says so on the timeline.
+            no_asyncio_debug = any(
+                e["kind"] == "sampler" and "AsyncioDebug section not available" in e["message"]
+                for e in c.model["events"]
+            )
+            if not no_asyncio_debug:
+                tasks = c.model["tasks"]
+                self.assertTrue(
+                    any(t["name"].startswith("worker-") for t in tasks.values()), (tasks, c.model["events"])
+                )
+                self.assertGreater(c.model["asyncSamples"], 10)
             self.assertIn("loopLag", c.model["tracks"])
             self.assertGreater(max(v for _, v in c.model["tracks"]["loopLag"]), 100)
             kinds = {e["kind"] for e in c.model["events"]}
