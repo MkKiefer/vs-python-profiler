@@ -687,6 +687,6 @@
     "@vscode/python-extension": "^1.0.6",
     "pinia": "^3.0.4",
     "vue": "^3.5.45",
-    "vue-router": "^4.6.4"
+    "vue-router": "^5.5.0"
   }
 }
