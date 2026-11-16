@@ -83,7 +83,9 @@ jobs:
     needs: verify
     permissions:
       contents: read
-    uses: ./.github/workflows/ci.yml
+    # The documented form for a reusable workflow of this repository, at the
+    # same commit; zizmor's "$/..." alternative is not documented for workflows.
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
     with:
       release: true
 
