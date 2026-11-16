@@ -95,7 +95,7 @@ jobs:
           node-version: 22
           # Release builds start from a clean npm cache so a poisoned cache entry
           # cannot end up in a published artifact.
-          cache: ${{ inputs.release && '' || 'npm' }}
+          cache: ${{ !inputs.release && 'npm' || '' }}
       - run: npm ci --ignore-scripts
       - name: package
         id: pack

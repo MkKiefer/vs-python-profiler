@@ -155,7 +155,7 @@ class CollectorSession(AgentListener, SamplerListener):
         if request.inject and self._agent is None:
             options = self._encoder.to_text(self._options.agent_options())
             try:
-                self._injector.inject(request.pid, self._agent_server.address, options)
+                self._injector.inject(sampler.pid, self._agent_server.address, options)
                 injected = True
             except AgentInjectionError as error:  # sampling still works without the agent
                 inject_error = str(error)

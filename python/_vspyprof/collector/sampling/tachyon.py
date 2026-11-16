@@ -163,15 +163,16 @@ class Tachyon:
         while True:
             try:
                 if _remote_debugging.is_python_process(pid):
-                    children = [
-                        child
-                        for child in _remote_debugging.get_child_pids(pid, recursive=False)
-                        if _remote_debugging.is_python_process(child)
-                    ]
-                    if len(children) == 1:
-                        return children[0]
-                    if not children:
-                        return pid
+                    return pid
+                # The launcher stub is no Python process; its interpreter is its only Python child,
+                # which it may not have started yet.
+                children = [
+                    child
+                    for child in _remote_debugging.get_child_pids(pid, recursive=False)
+                    if _remote_debugging.is_python_process(child)
+                ]
+                if len(children) == 1:
+                    return children[0]
             except _READ_ERRORS:
                 pass
             if time.monotonic() > deadline:

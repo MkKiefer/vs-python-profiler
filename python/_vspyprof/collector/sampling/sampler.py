@@ -6,6 +6,7 @@ import time
 import traceback
 from dataclasses import dataclass
 
+from _vspyprof.agent_protocol.names import EventKind
 from _vspyprof.collector.options import CollectorOptions
 from _vspyprof.collector.protocol import StopReason
 from _vspyprof.collector.sampling.gc_recorder import GcRecorder
@@ -86,6 +87,7 @@ class Sampler:
         self._last_cpu: _CpuReading | None = None
         self._last_ticks = _TickReading(time.perf_counter(), 0)
         self._tasks_job = _Periodic(0.2)
+        self._tasks_error_reported = False
         self._stats_job = _Periodic(0.5)
         self._gc_job = _Periodic(1.0)
         self._children_job = _Periodic(2.0)
@@ -175,7 +177,11 @@ class Sampler:
     def _sample_tasks(self, t: float) -> None:
         try:
             all_tasks = self._tachyon.all_tasks()
-        except Tachyon.READ_ERRORS:
+        except Tachyon.READ_ERRORS as error:
+            # mostly torn reads that the next tick gets right; a persistent failure must be visible
+            if not self._tasks_error_reported:
+                self._tasks_error_reported = True
+                self._store.add_event(EventKind.SAMPLER, f"Reading the asyncio tasks failed: {error}")
             return
         if not self._store.has_tasks() and not any(info.awaited_by for info in all_tasks):
             return  # not an asyncio program (yet)

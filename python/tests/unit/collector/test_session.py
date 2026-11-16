@@ -149,6 +149,17 @@ class TestCollectorSession(unittest.TestCase):
         options = WireDecoder(TO_AGENT).decode(inject.call_args.args[2])
         self.assertEqual(options, AgentOptions(asyncio_debug=True))
 
+    def test_attach_to_launcher_injects_agent_into_sampled_interpreter(self) -> None:
+        sampler = create_autospec(Sampler, instance=True, pid=78)  # the launcher 77 started interpreter 78
+        self.sampler_factory.create = MagicMock(return_value=sampler)
+        inject = MagicMock()
+        self.injector.inject = inject
+
+        result = self.session.run(requests.Attach(pid=77))
+
+        self.assertEqual(inject.call_args.args[0], 78)
+        self.assertEqual(result, AttachResult(78, True, None))
+
     def test_attach_with_inject_disabled_does_not_inject(self) -> None:
         sampler = create_autospec(Sampler, instance=True, pid=77)
         self.sampler_factory.create = MagicMock(return_value=sampler)

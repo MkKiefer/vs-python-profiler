@@ -178,9 +178,11 @@ class E2E(unittest.TestCase):
 
     def test_launch_memory_snapshots(self):
         c = Client()
+        p = None
         try:
             info = c.initialize(rateHz=200, stripLauncher=True, tracemalloc=True)
-            p = launch_target(c, info, "leaky.py", "6")
+            # runs until killed below: snapshots can take seconds on slow runners
+            p = launch_target(c, info, "leaky.py", "120")
             c.wait_note("AgentConnected")
             time.sleep(1.5)
             a = c.call("TakeSnapshot", {"label": "A"})
@@ -205,9 +207,11 @@ class E2E(unittest.TestCase):
             counts = c.call("CountObjects")
             self.assertTrue(any(count["typeName"].endswith("Record") for count in counts["counts"]))
             self.assertIn("traced", c.model["tracks"])
-            p.wait(20)
         finally:
             c.close()
+            if p is not None:
+                p.kill()
+                p.communicate()
 
     def test_attach_asyncio(self):
         target = subprocess.Popen(
@@ -223,7 +227,7 @@ class E2E(unittest.TestCase):
             c.call("SetAsyncioDebug", {"enabled": True, "slowMs": 50})
             time.sleep(3.5)
             tasks = c.model["tasks"]
-            self.assertTrue(any(t["name"].startswith("worker-") for t in tasks.values()), tasks)
+            self.assertTrue(any(t["name"].startswith("worker-") for t in tasks.values()), (tasks, c.model["events"]))
             self.assertGreater(c.model["asyncSamples"], 10)
             self.assertIn("loopLag", c.model["tracks"])
             self.assertGreater(max(v for _, v in c.model["tracks"]["loopLag"]), 100)
