@@ -5,6 +5,11 @@ on:
     branches: ['**']
   pull_request:
   workflow_call:
+    inputs:
+      release:
+        description: Build for a release (never cancelled, no npm cache)
+        type: boolean
+        default: false
     outputs:
       vsix:
         description: File name of the packaged extension inside the "vsix" artifact
@@ -15,9 +20,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Never cancel a release run (workflow_call shares the caller's ref).
+  # Never cancel a release run. Called from release.yml, github.workflow is
+  # "Release", so release runs never share a group with ordinary CI runs.
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ !inputs.release }}
 
 # Third-party and GitHub actions are pinned to full commit SHAs (tags can be
 # moved); Dependabot keeps the pins up to date.
@@ -89,7 +95,7 @@ jobs:
           node-version: 22
           # Release builds start from a clean npm cache so a poisoned cache entry
           # cannot end up in a published artifact.
-          cache: ${{ startsWith(github.ref, 'refs/tags/') && '' || 'npm' }}
+          cache: ${{ inputs.release && '' || 'npm' }}
       - run: npm ci --ignore-scripts
       - name: package
         id: pack

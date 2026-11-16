@@ -1,10 +1,16 @@
 name: Release
-# Push a tag "vX.Y.Z" whose version matches package.json and
-# python/pyproject.toml, on a commit that is on the default branch:
-#   git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+# Two ways to release the version that is in package.json and
+# python/pyproject.toml (bump both with `npm run release -- patch|minor|major`):
+#   * Actions -> Release -> Run workflow, on the default branch. The tag vX.Y.Z
+#     is created on that commit by the release itself.
+#   * Push the tag yourself, on a commit that is on the default branch:
+#       git tag -a v0.2.0 -m "v0.2.0" && git push origin v0.2.0
+# Either way CHANGELOG.md must have a "## [X.Y.Z]" section; it becomes the
+# release notes, followed by GitHub's list of merged pull requests.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 # Every job starts with no token permissions and asks only for what it needs.
 permissions: {}
@@ -19,24 +25,58 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      notes: ${{ steps.check.outputs.notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 0 }
-      - name: tag matches the project versions and is on the default branch
+      - name: version, tag, branch and changelog are consistent
+        id: check
         env:
-          TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::tag '$TAG' is not of the form vX.Y.Z"; exit 1
-          fi
-          version="${TAG#v}"
           extension=$(node -p "require('./package.json').version")
           collector=$(python3 -c "import tomllib; print(tomllib.load(open('python/pyproject.toml', 'rb'))['project']['version'])")
-          [[ "$extension" == "$version" ]] || { echo "::error::package.json is $extension, tag is $TAG"; exit 1; }
-          [[ "$collector" == "$version" ]] || { echo "::error::python/pyproject.toml is $collector, tag is $TAG"; exit 1; }
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            [[ "$REF" == "refs/heads/$DEFAULT_BRANCH" ]] \
+              || { echo "::error::run the release from $DEFAULT_BRANCH, not $REF_NAME"; exit 1; }
+            tag="v$extension"
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::$tag already exists; bump the version first (npm run release -- patch)"; exit 1
+            fi
+          else
+            tag="$REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$tag' is not of the form vX.Y.Z"; exit 1
+          fi
+          version="${tag#v}"
+          [[ "$extension" == "$version" ]] || { echo "::error::package.json is $extension, tag is $tag"; exit 1; }
+          [[ "$collector" == "$version" ]] || { echo "::error::python/pyproject.toml is $collector, tag is $tag"; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH" \
-            || { echo "::error::$TAG is not on $DEFAULT_BRANCH"; exit 1; }
+            || { echo "::error::$tag is not on $DEFAULT_BRANCH"; exit 1; }
+
+          # The "## [X.Y.Z]" section, up to the next section or the link list.
+          notes=$(awk -v head="## [$version]" '
+            index($0, head) == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[.+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md)
+          if [[ -z "${notes//[[:space:]]/}" ]]; then
+            echo "::error::CHANGELOG.md has no entries under '## [$version]'"; exit 1
+          fi
+          delimiter="notes_$(openssl rand -hex 16)"
+          {
+            echo "tag=$tag"
+            echo "notes<<$delimiter"
+            echo "$notes"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $GITHUB_SHA"
 
   # The full CI (tests on all platforms) and the .vsix build, read-only.
   ci:
@@ -44,20 +84,22 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
+    with:
+      release: true
 
   # The only job with write access. It runs no repository code: it downloads
   # the artifact built above, attests it and attaches it to the release.
   publish:
-    needs: ci
+    needs: [verify, ci]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Configure required reviewers / tag restrictions for this environment in
-    # Settings -> Environments to gate every release.
+    # Configure required reviewers for this environment in Settings ->
+    # Environments to gate every release.
     environment:
       name: release
-      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.verify.outputs.tag }}
     permissions:
-      contents: write # create the release
+      contents: write # create the release (and, from "Run workflow", its tag)
       id-token: write # sign the provenance attestation
       attestations: write # store it
     steps:
@@ -72,13 +114,20 @@ jobs:
       - name: create release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          NOTES: ${{ needs.verify.outputs.notes }}
         run: |
-          gh release create "$TAG" dist/*.vsix dist/SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "$TAG" \
-            --generate-notes
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          args=(--repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes)
+          if [[ "$EVENT" == push ]]; then
+            args+=(--verify-tag)            # the pushed tag must exist
+          else
+            args+=(--target "$GITHUB_SHA")  # create the tag on the tested commit
+          fi
+          # gh uploads the assets to a draft and publishes it afterwards, so
+          # this also works with immutable releases.
+          gh release create "$TAG" dist/*.vsix dist/SHA256SUMS.txt "${args[@]}"
 
   # The stores get the same .vsix that was attested and released above. Each
   # store is its own job, so one failing does not hold back the other, and each

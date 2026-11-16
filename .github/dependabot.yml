@@ -4,10 +4,16 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    # Wait a week before proposing a new version, so a hijacked release is
+    # usually caught and yanked before it reaches this repository.
+    cooldown: { default-days: 7 }
     groups:
       actions: { patterns: ['*'] }
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
+    # Wait a week before proposing a new version, so a hijacked release is
+    # usually caught and yanked before it reaches this repository.
+    cooldown: { default-days: 7 }
     groups:
       npm-dev: { dependency-type: development }
