@@ -116,6 +116,9 @@ export enum QuickPickItemKind {
   Separator = -1,
   Default = 0,
 }
+export class TabInputText {
+  constructor(readonly uri: Uri) {}
+}
 export class RelativePattern {
   constructor(
     readonly base: unknown,

@@ -35,6 +35,11 @@ jobs:
         with: { python-version: '3.15', allow-prereleases: true }
       # No dependency install scripts: the build does not need them.
       - run: npm ci --ignore-scripts
+      # The session integration test spawns the target from Node and the
+      # collector attaches to it as a sibling, which Yama ptrace_scope=1 (the
+      # Ubuntu runner default) forbids.
+      - name: allow attaching to non-child processes
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0
       - run: npm run check
         env:
           # enables test/session.integration.test.ts (real collector + target)
@@ -62,6 +67,11 @@ jobs:
       - name: integration (macOS, sudo)
         if: runner.os == 'macOS'
         run: sudo -E pdm run test:integration
+      # Linux: the attach tests attach to targets that are not the collector's
+      # children, which Yama ptrace_scope=1 (the Ubuntu runner default) forbids.
+      - name: allow attaching to non-child processes (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.yama.ptrace_scope=0
       - name: integration
         if: runner.os != 'macOS'
         run: pdm run test:integration
