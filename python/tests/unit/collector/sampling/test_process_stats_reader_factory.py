@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import unittest
 
 from _vspyprof.collector.sampling.linux_stats_reader import LinuxProcessStatsReader
@@ -25,7 +26,12 @@ class TestProcessStatsReaderFactory(unittest.TestCase):
         reader = ProcessStatsReaderFactory().for_pid(os.getpid())
         self.addCleanup(reader.close)
 
+        # the ps reader (macOS) answers a read with the result of the ps started by the previous one
+        deadline = time.monotonic() + 5.0
         stats = reader.read()
+        while stats is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+            stats = reader.read()
 
         self.assertIsNotNone(stats)
         assert stats is not None

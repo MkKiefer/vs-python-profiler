@@ -1,6 +1,7 @@
 """Process statistics on Linux."""
 
 import os
+import sys
 
 from _vspyprof.collector.sampling.process_stats import ProcessStats, ProcessStatsReader
 
@@ -12,8 +13,10 @@ class LinuxProcessStatsReader(ProcessStatsReader):
 
     def __init__(self, pid: int) -> None:
         super().__init__(pid)
-        self._page_size = os.sysconf("SC_PAGE_SIZE")
-        self._ticks_per_second = os.sysconf("SC_CLK_TCK")
+        if sys.platform == "win32":  # also tells mypy, which checks this module on Windows, that sysconf exists
+            raise OSError("/proc statistics are not available on Windows")
+        self._page_size: int = os.sysconf("SC_PAGE_SIZE")
+        self._ticks_per_second: int = os.sysconf("SC_CLK_TCK")
 
     def _read(self) -> ProcessStats | None:
         with open(f"/proc/{self._pid}/statm", "rb") as f:

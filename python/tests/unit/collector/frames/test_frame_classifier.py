@@ -1,4 +1,7 @@
 import os
+import sys
+import sysconfig
+import tempfile
 import unittest
 
 from _vspyprof import PACKAGE_DIR
@@ -37,6 +40,22 @@ class TestFrameClassifier(unittest.TestCase):
         filename = os.path.join(self.root, "py", "library", "mine.py")
 
         self.assertEqual(self.classifier.category(filename), FrameCategory.USER)
+
+    @unittest.skipIf(sys.platform == "win32", "creating symlinks needs privileges on Windows")
+    def test_category_with_stdlib_reached_through_symlink_returns_stdlib(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            real_std = os.path.join(tmp, "framework", "lib")
+            os.makedirs(os.path.join(real_std, "json"))
+            linked_prefix = os.path.join(tmp, "toolcache")
+            os.symlink(os.path.join(tmp, "framework"), linked_prefix)
+            linked_std = os.path.join(linked_prefix, "lib")
+            for std_dir, filename in ((linked_std, real_std), (real_std, linked_std)):
+                with self.subTest(std_dir=std_dir):
+                    classifier = FrameClassifier([std_dir], [], self.internal_dir)
+
+                    category = classifier.category(os.path.join(filename, "json", "decoder.py"))
+
+                    self.assertEqual(category, FrameCategory.STDLIB)
 
     def test_is_internal_with_profiler_file_returns_true(self) -> None:
         filename = os.path.join(self.internal_dir, "agent.py")
@@ -79,7 +98,11 @@ class TestFrameClassifier(unittest.TestCase):
     def test_for_running_interpreter_classifies_stdlib_and_own_package(self) -> None:
         classifier = FrameClassifier.for_running_interpreter()
 
-        self.assertEqual(classifier.category(os.__file__), FrameCategory.STDLIB)
+        self.assertEqual(
+            classifier.category(os.__file__),
+            FrameCategory.STDLIB,
+            msg=f"{os.__file__} not below the stdlib of {sysconfig.get_paths()} (base prefix {sys.base_prefix})",
+        )
         self.assertTrue(classifier.is_internal(os.path.join(PACKAGE_DIR, "agent.py")))
 
 

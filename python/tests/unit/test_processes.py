@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from _vspyprof.processes import ProcessLister, PythonProcess
@@ -58,9 +59,15 @@ class TestProcessLister(unittest.TestCase):
         self.addCleanup(child.communicate)
         self.addCleanup(child.kill)
 
-        found = [process for process in self.lister.list_processes() if process.pid == child.pid]
+        # the child may still be starting (macOS framework builds re-exec into Python.app)
+        deadline = time.monotonic() + 5.0
+        listed = self.lister.list_processes()
+        while child.pid not in [process.pid for process in listed] and time.monotonic() < deadline:
+            time.sleep(0.1)
+            listed = self.lister.list_processes()
+        found = [process for process in listed if process.pid == child.pid]
 
-        self.assertEqual(len(found), 1, msg=f"child {child.pid} not listed")
+        self.assertEqual(len(found), 1, msg=f"child {child.pid} ({sys.executable}) not listed in {listed}")
         self.assertIn("marker-arg", found[0].argv)
 
     def test_list_processes_excludes_own_process(self) -> None:

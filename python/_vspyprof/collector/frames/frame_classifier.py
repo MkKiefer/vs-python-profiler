@@ -75,7 +75,13 @@ class FrameClassifier:
     def _categorise(self, filename: str) -> FrameCategory:
         if not filename or filename[0] in "<~":
             return FrameCategory.SYNTHETIC
-        normalised = os.path.normcase(filename)
+        category = self._categorise_path(os.path.normcase(filename))
+        if category is FrameCategory.USER:
+            # the file may be reached through a symlink (e.g. a tool cache linked to the framework on macOS)
+            category = self._categorise_path(os.path.normcase(os.path.realpath(filename)))
+        return category
+
+    def _categorise_path(self, normalised: str) -> FrameCategory:
         # site-packages usually lives below the stdlib directory: check libraries first
         if normalised.startswith(self._lib_dirs):
             return FrameCategory.LIBRARY
@@ -85,6 +91,10 @@ class FrameClassifier:
 
     @staticmethod
     def _normalise_dirs(paths: Iterable[str]) -> tuple[str, ...]:
-        """Absolute, case-normalised directories with a trailing separator, without duplicates."""
-        normalised = (os.path.join(os.path.normcase(os.path.abspath(path)), "") for path in paths)
+        """Absolute, case-normalised directories with a trailing separator, as given and with symlinks resolved."""
+        normalised = (
+            os.path.join(os.path.normcase(variant), "")
+            for path in paths
+            for variant in (os.path.abspath(path), os.path.realpath(path))
+        )
         return tuple(dict.fromkeys(normalised))
