@@ -67,7 +67,15 @@ class TestProcessLister(unittest.TestCase):
             listed = self.lister.list_processes()
         found = [process for process in listed if process.pid == child.pid]
 
-        self.assertEqual(len(found), 1, msg=f"child {child.pid} ({sys.executable}) not listed in {listed}")
+        if not found:
+            ps = subprocess.run(
+                ["ps", "-ww", "-o", "pid=,comm=,args=", "-p", str(child.pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.fail(f"child {child.pid} ({sys.executable}) not listed in {listed}; ps: {ps.stdout!r} {ps.stderr!r}")
+        self.assertEqual(len(found), 1)
         self.assertIn("marker-arg", found[0].argv)
 
     def test_list_processes_excludes_own_process(self) -> None:

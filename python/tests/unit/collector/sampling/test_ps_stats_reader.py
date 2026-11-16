@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 import time
 import unittest
 
@@ -8,7 +9,8 @@ from _vspyprof.collector.sampling.ps_stats_reader import PsProcessStatsReader
 
 
 class TestPsProcessStatsReader(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    # Windows never uses this reader, and the ps found there (Git for Windows) has no -o
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("ps"), "needs a POSIX ps")
     def test_read_returns_previous_reading_without_waiting_for_ps(self) -> None:
         reader = PsProcessStatsReader(os.getpid())
         self.addCleanup(reader.close)

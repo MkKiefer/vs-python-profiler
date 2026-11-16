@@ -127,26 +127,35 @@ class ProcessLister:
         return records
 
     def _list_macos(self) -> list[PythonProcess]:
+        # The executable path (comm) may contain spaces, so it gets a ps call of its own,
+        # where it is the last column; args is the last column of the other one.
+        executables = {int(row[0]): row[1] for row in self._ps("comm=") if len(row) == 2}
+        own_pid = os.getpid()
+        records = []
+        for row in self._ps("ppid=,args="):
+            if len(row) < 2:
+                continue
+            pid, parent_pid = int(row[0]), int(row[1])
+            command = executables.get(pid, "")
+            argv = row[2].split() if len(row) > 2 else [command]
+            if pid == own_pid or not (self.is_python_name(command) or self.is_python_name(argv[0])):
+                continue
+            executable = command if os.path.isabs(command) else argv[0]
+            real = os.path.realpath(executable) if os.path.isabs(executable) else executable
+            records.append(self._process(pid, parent_pid, executable, real, argv, None))
+        return records
+
+    @staticmethod
+    def _ps(columns: str) -> list[list[str]]:
+        """``ps -ax`` rows: the pid, then ``columns``; the last column keeps its spaces."""
         result = subprocess.run(
-            ["ps", "-axww", "-o", "pid=,ppid=,comm=,args="],
+            ["ps", "-axww", "-o", "pid=," + columns],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
-        own_pid = os.getpid()
-        records = []
-        for line in result.stdout.splitlines():
-            parts = line.strip().split(None, 3)
-            if len(parts) < 3:
-                continue
-            pid, parent_pid, command = int(parts[0]), int(parts[1]), parts[2]
-            if pid == own_pid or not self.is_python_name(command):
-                continue
-            argv = (parts[3] if len(parts) > 3 else command).split()
-            real = os.path.realpath(command) if os.path.isabs(command) else command
-            records.append(self._process(pid, parent_pid, command, real, argv, None))
-        return records
+        return [line.split(None, columns.count(",") + 1) for line in result.stdout.splitlines() if line.strip()]
 
     def _list_windows(self) -> list[PythonProcess]:
         query = (
